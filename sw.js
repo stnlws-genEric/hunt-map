@@ -2,9 +2,9 @@
    The app's own code is fetched network-first so an update reaches you on the
    next load rather than the one after; the cache is the fallback when there is
    no signal. Icons and fonts stay cache-first since they never change. */
-const CACHE = "huntmap-v16";
+const CACHE = "huntmap-v17";
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
-               "./icon-192.png", "./icon-512.png"];
+               "./icon-180-v16.png", "./icon-192-v16.png", "./icon-512-v16.png"];
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

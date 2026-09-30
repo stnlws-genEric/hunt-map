@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 16;
+const BUILD = 17;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
