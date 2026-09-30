@@ -1,5 +1,8 @@
-/* Cache the app shell so it opens with no signal. Data lives in IndexedDB, never here. */
-const CACHE = "huntmap-v10";
+/* Offline shell cache.
+   The app's own code is fetched network-first so an update reaches you on the
+   next load rather than the one after; the cache is the fallback when there is
+   no signal. Icons and fonts stay cache-first since they never change. */
+const CACHE = "huntmap-v16";
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
                "./icon-192.png", "./icon-512.png"];
 
@@ -14,20 +17,19 @@ self.addEventListener("activate", e => {
 self.addEventListener("fetch", e => {
   const url = new URL(e.request.url);
   if(e.request.method !== "GET") return;
-  // Never cache weather; it must be fresh or absent.
-  if(url.hostname.endsWith("weather.gov")) return;
-  // App shell: serve from cache first so it works offline, refresh in the background.
-  if(url.origin === location.origin){
-    e.respondWith(caches.match(e.request).then(hit => {
-      const net = fetch(e.request).then(res => {
+  if(url.hostname.endsWith("weather.gov")) return;      // never cache weather
+
+  const isCode = url.origin === location.origin &&
+                 /(\.html|\.js|\.webmanifest|\/)$/.test(url.pathname);
+  if(isCode){
+    e.respondWith(
+      fetch(e.request).then(res => {
         if(res && res.ok) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
         return res;
-      }).catch(() => hit);
-      return hit || net;
-    }));
+      }).catch(() => caches.match(e.request).then(hit => hit || caches.match("./index.html")))
+    );
     return;
   }
-  // Fonts and anything else: cache opportunistically, fall back to cache offline.
   e.respondWith(caches.match(e.request).then(hit => hit || fetch(e.request).then(res => {
     if(res && (res.ok || res.type === "opaque")) caches.open(CACHE).then(c => c.put(e.request, res.clone()));
     return res;

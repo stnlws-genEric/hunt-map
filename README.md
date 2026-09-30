@@ -26,3 +26,5 @@ anywhere; there is no server side.
 Weather comes from the US National Weather Service API when a connection is
 available, and is skipped when it isn't. Sun, dusk and moon phase are computed
 on the device with no network at all.
+
+The app icon is derived from a photograph of the owner's own whitetail skull.

@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 10;
+const BUILD = 16;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -1155,7 +1155,11 @@ document.getElementById("filein").onchange = async e => {
   if(!lines.length && !pts.length) return toast("Nothing readable in that file.");
   const inMap = p => p[0] > -400 && p[0] < D.w+400 && p[1] > -400 && p[1] < D.h+400;
   let offmap = 0;
-  lines = lines.map(l => rdp(l, 3 / MPP())).filter(l => {
+  lines = lines.map(l => {
+    const thinned = rdp(l, 3 / MPP());
+    thinned.meta = l.meta;                 // rdp builds a new array; carry the name and type over
+    return thinned;
+  }).filter(l => {
     if(l.filter(inMap).length / l.length < .3){ offmap++; return false; }
     return true;
   });
@@ -1165,6 +1169,10 @@ document.getElementById("filein").onchange = async e => {
   const bits = [lines.length + " track" + (lines.length === 1 ? "" : "s") +
                 (total ? " · " + Math.round(total) + " m (" + (total/1609.34).toFixed(2) + " mi)" : "")];
   if(pts.length) bits.push(pts.length + " waypoint" + (pts.length === 1 ? "" : "s"));
+  const named = lines.filter(l => l.meta && l.meta.name).length;
+  const typed = pts.filter(p => p.props && PINS[p.props.kind]).length;
+  if(named) bits.push(named + " with names");
+  if(typed) bits.push(typed + " typed pins");
   if(dropped) bits.push(dropped + " poor fixes dropped");
   if(offmap) bits.push(offmap + " off this map, ignored");
   document.getElementById("importsummary").textContent = bits.join(" · ");
@@ -1178,7 +1186,7 @@ document.getElementById("imp-add").onclick = () => {
   push();
   for(const l of pending.lines){
     const m = l.meta || {};
-    trails.push({id:newId("g"), p:Array.from(l), name:m.name || "",
+    trails.push({id:newId("g"), p:l.slice(), name:m.name || "",
                  kind:KINDS[m.kind] ? m.kind : "trail"});
   }
   const n = pending.lines.length; idlg.close(); pending = null;
