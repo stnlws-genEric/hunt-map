@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 9;
+const BUILD = 10;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -1099,15 +1099,34 @@ function parseGeoJSON(text){
   const g = JSON.parse(text), lines = [], pts = [];
   for(const f of (g.type === "FeatureCollection" ? g.features : [g])){
     const gm = f.geometry || f; if(!gm) continue;
-    const nm = (f.properties && (f.properties.name || f.properties.Name)) || "";
-    if(gm.type === "LineString") lines.push(gm.coordinates.map(c => llToWorld(c[0], c[1])));
-    else if(gm.type === "MultiLineString") for(const l of gm.coordinates) lines.push(l.map(c => llToWorld(c[0], c[1])));
+    const pr = f.properties || {};
+    const nm = pr.name || pr.Name || "";
+    if(gm.type === "LineString")
+      lines.push(Object.assign(gm.coordinates.map(c => llToWorld(c[0], c[1])), {meta:{name:nm, kind:pr.type}}));
+    else if(gm.type === "MultiLineString")
+      for(const l of gm.coordinates) lines.push(l.map(c => llToWorld(c[0], c[1])));
     else if(gm.type === "Point"){
+      if(pr.kind === "parcel") continue;
       const xy = llToWorld(gm.coordinates[0], gm.coordinates[1]);
-      pts.push({x:xy[0], y:xy[1], name:nm});
+      pts.push({x:xy[0], y:xy[1], name:nm, props:pr});
     }
   }
   return {lines:lines.filter(l => l.length >= 2), pts, dropped:0};
+}
+// Rebuild a full pin from exported GeoJSON properties, so phone -> Mac keeps everything.
+function pinFromProps(x, y, pr){
+  pr = pr || {};
+  const t = PINS[pr.kind] ? pr.kind : "note";
+  const p = {id:newId("p"), t, x, y, name:pr.name || "", note:pr.note || "",
+             when:pr.date || "", acc:pr.accuracy_m || undefined};
+  if(DIRECTIONAL.has(t)){
+    p.dir = typeof pr.heading_deg === "number" ? pr.heading_deg : 0;
+    p.count = pr.count || 1;
+    p.sexage = pr.what || "unknown";
+    p.tod = pr.time_of_day || "";
+  }
+  if(t === "stand") p.winds = Array.isArray(pr.winds) ? pr.winds : [];
+  return p;
 }
 const idlg = document.getElementById("importdlg");
 document.getElementById("importbtn").onclick = () => document.getElementById("filein").click();
@@ -1118,6 +1137,17 @@ document.getElementById("filein").onchange = async e => {
   for(const f of files){
     try{
       const text = await f.text();
+      if(/"huntmap-state\/1"/.test(text)){        // a backup: replace everything
+        const b = JSON.parse(text);
+        push();
+        trails = (b.trails || []).map((t,i) => ({id:t.id || ("b"+i), p:t.p,
+                  name:t.name || "", kind:KINDS[t.kind] ? t.kind : "trail"}));
+        pins = b.pins || [];
+        nudge = b.nudge || {dx:0, dy:0, rot:0, scl:1};
+        selT.clear(); primary = null; selPin = null; anchors = [];
+        nudgeStat(); after("Backup restored \u2014 " + trails.length + " lines, " + pins.length + " pins.");
+        return;
+      }
       const r = /^\s*[[{]/.test(text) ? parseGeoJSON(text) : parseGPX(text);
       lines = lines.concat(r.lines); pts = pts.concat(r.pts); dropped += r.dropped;
     }catch(err){ toast(f.name + ": " + err.message); }
@@ -1146,7 +1176,11 @@ document.getElementById("filein").onchange = async e => {
 document.getElementById("imp-add").onclick = () => {
   if(!pending) return;
   push();
-  for(const l of pending.lines) trails.push({id:newId("g"), p:l, name:"", kind:"trail"});
+  for(const l of pending.lines){
+    const m = l.meta || {};
+    trails.push({id:newId("g"), p:Array.from(l), name:m.name || "",
+                 kind:KINDS[m.kind] ? m.kind : "trail"});
+  }
   const n = pending.lines.length; idlg.close(); pending = null;
   after(n + " track" + (n === 1 ? "" : "s") + " added.");
 };
@@ -1160,7 +1194,8 @@ document.getElementById("imp-pins").onclick = () => {
   if(!pending) return;
   push();
   for(const p of pending.pts)
-    pins.push({id:newId("p"), t:"note", x:p.x, y:p.y, name:p.name || "", note:"Imported waypoint"});
+    pins.push(p.props ? pinFromProps(p.x, p.y, p.props)
+                      : {id:newId("p"), t:"note", x:p.x, y:p.y, name:p.name || "", note:"Imported waypoint"});
   const n = pending.pts.length; idlg.close(); pending = null;
   after(n + " waypoint" + (n === 1 ? "" : "s") + " added as pins.");
 };
@@ -1194,6 +1229,13 @@ function showExport(title, hint, text, filename){
   document.getElementById("sharefile").hidden = !(navigator.canShare && navigator.canShare({files:[new File(["x"], "a.txt", {type:"text/plain"})]}));
   edlg.showModal();
 }
+function backupBlob(){
+  return {format:"huntmap-state/1", savedAt:new Date().toISOString(),
+          map:(D && D.name) || "", trails, pins, nudge};
+}
+document.getElementById("backupbtn").onclick = () =>
+  showExport("Backup", "Everything exactly as it is here. Send it to your other device and use Import to restore it.",
+             JSON.stringify(backupBlob()), "hunt-backup.json");
 document.getElementById("exportbtn").onclick = () =>
   showExport("Export GeoJSON", "Everything on the map as lat/long. Opens in onX, HuntStand, BaseCamp or QGIS.",
              JSON.stringify(geojson(), null, 1), "hunt-map.geojson");

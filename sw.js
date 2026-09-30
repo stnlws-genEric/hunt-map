@@ -1,5 +1,5 @@
 /* Cache the app shell so it opens with no signal. Data lives in IndexedDB, never here. */
-const CACHE = "huntmap-v9";
+const CACHE = "huntmap-v10";
 const SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
                "./icon-192.png", "./icon-512.png"];
 
