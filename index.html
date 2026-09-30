@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1d211a">
+<title>Hunt Map</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root{
+  --ground:#e9e6de; --panel:#f7f5f0; --panel-2:#ffffff; --ink:#22251f; --ink-2:#5d6157;
+  --line:#c9c5b8; --blaze:#d9541a; --moss:#4a6b3f; --clay:#9a6b3a; --water:#2f6b82; --danger:#b03030;
+  --sky:#39d0ff;
+  --shadow:0 2px 14px rgba(30,32,26,.18);
+  --f-ui:"Barlow Condensed","Arial Narrow",sans-serif;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --f-num:"IBM Plex Mono",ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#14170f; --panel:#1d211a; --panel-2:#262b22; --ink:#e8e7df; --ink-2:#a2a598;
+  --line:#3a4033; --blaze:#ff7a3d; --moss:#8fb37f; --clay:#c99a63; --water:#6fb6d0; --danger:#e06a6a;
+  --shadow:0 2px 16px rgba(0,0,0,.5); color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --ground:#14170f; --panel:#1d211a; --panel-2:#262b22; --ink:#e8e7df; --ink-2:#a2a598;
+  --line:#3a4033; --blaze:#ff7a3d; --moss:#8fb37f; --clay:#c99a63; --water:#6fb6d0; --danger:#e06a6a;
+  --shadow:0 2px 16px rgba(0,0,0,.5); color-scheme:dark;
+}
+*{-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;overscroll-behavior:none}
+body{background:var(--ground);color:var(--ink);font-family:var(--f-body);font-size:14px;overflow:hidden;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+img{max-width:100%}
+[hidden]{display:none!important}
+#app{position:fixed;inset:0;display:flex;flex-direction:column;
+  padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}
+canvas{display:block;touch-action:none;cursor:grab}
+canvas.cross{cursor:crosshair}
+#stage{position:relative;flex:1;min-height:0}
+
+header{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.4rem 12px;
+  background:var(--panel);border-bottom:1px solid var(--line)}
+h1{font-family:var(--f-ui);font-size:1.15rem;font-weight:700;letter-spacing:.03em;margin:0;text-transform:uppercase}
+.sub{font-family:var(--f-num);font-size:.64rem;color:var(--ink-2)}
+.sub b{font-weight:500;color:var(--ink)}
+#savestate{margin-left:auto;font-family:var(--f-ui);font-size:.75rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+#savestate[data-s="saving"]{color:var(--clay)} #savestate[data-s="saved"]{color:var(--moss)}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);flex:none}
+.card>h2{font-family:var(--f-ui);text-transform:uppercase;letter-spacing:.1em;font-size:.7rem;color:var(--ink-2);
+  margin:0;padding:.42rem .6rem .3rem;display:flex;justify-content:space-between;align-items:baseline;gap:.4rem}
+.card>h2 .c{font-family:var(--f-num);font-size:.62rem;text-transform:none;letter-spacing:0}
+.card>h2.clickable{cursor:pointer;user-select:none}
+.card .body{padding:0 .6rem .55rem;display:flex;flex-direction:column;gap:5px}
+.rail{position:absolute;top:8px;left:8px;z-index:5;display:flex;flex-direction:column;gap:6px;
+  width:min(224px,56vw);max-height:calc(100% - 16px);overflow:auto}
+.row{display:flex;gap:5px;flex-wrap:wrap}
+.row.g2{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+button,select,input,textarea{font-family:var(--f-body);font-size:.82rem;color:var(--ink)}
+.btn{appearance:none;background:var(--panel-2);border:1px solid var(--line);border-radius:3px;
+  padding:.34rem .5rem;cursor:pointer;font-family:var(--f-ui);font-size:.85rem;letter-spacing:.03em;
+  line-height:1.15;text-transform:uppercase;text-align:center;min-height:32px}
+.btn:hover:not(:disabled){border-color:var(--ink-2)}
+.btn:focus-visible{outline:2px solid var(--blaze);outline-offset:1px}
+.btn[aria-pressed="true"]{background:var(--blaze);border-color:var(--blaze);color:#fff}
+.btn:disabled{opacity:.38;cursor:default}
+.btn.sm{font-size:.76rem;padding:.26rem .4rem;min-height:28px}
+.btn.danger{color:var(--danger);border-color:var(--danger)}
+.btn.danger:hover:not(:disabled){background:var(--danger);color:#fff}
+.btn.go{background:var(--moss);border-color:var(--moss);color:#fff}
+.btn.rec[aria-pressed="true"]{background:var(--danger);border-color:var(--danger)}
+label.chk{display:flex;align-items:center;gap:.4rem;font-size:.78rem;cursor:pointer;min-height:26px}
+label.chk input{accent-color:var(--blaze);margin:0;width:16px;height:16px}
+.swatch{width:10px;height:10px;border-radius:2px;flex:none}
+
+#insp{position:absolute;top:8px;right:8px;z-index:6;width:min(268px,88vw);max-height:calc(100% - 16px);
+  overflow:auto;display:flex;flex-direction:column}
+.field{display:flex;flex-direction:column;gap:2px}
+.field>span{font-family:var(--f-ui);text-transform:uppercase;letter-spacing:.08em;font-size:.66rem;color:var(--ink-2)}
+.field input,.field select,.field textarea{background:var(--panel-2);border:1px solid var(--line);
+  border-radius:3px;padding:.3rem .35rem;width:100%;box-sizing:border-box;font-size:16px}
+.field textarea{resize:vertical;min-height:46px}
+.wind{display:grid;grid-template-columns:repeat(4,1fr);gap:3px}
+.wind button{padding:.24rem 0;font-size:.74rem}
+.dial{display:flex;align-items:center;gap:.6rem}
+.dial svg{flex:none;cursor:pointer;touch-action:none}
+.hint{font-size:.72rem;color:var(--ink-2);line-height:1.38}
+.hint kbd{font-family:var(--f-num);font-size:.68rem;background:var(--panel-2);border:1px solid var(--line);border-radius:2px;padding:0 .2rem}
+.stat{font-family:var(--f-num);font-size:.71rem;color:var(--ink-2)}
+.sep{height:1px;background:var(--line);margin:.15rem 0}
+.grp{font-family:var(--f-ui);text-transform:uppercase;letter-spacing:.08em;font-size:.64rem;color:var(--ink-2);margin-top:.1rem}
+
+#tlist{max-height:170px;overflow:auto;display:flex;flex-direction:column;gap:1px}
+.trow{display:flex;align-items:center;gap:.35rem;padding:.2rem .25rem;border-radius:2px;cursor:pointer;font-size:.75rem}
+.trow:hover{background:var(--panel-2)}
+.trow[aria-selected="true"]{background:var(--blaze);color:#fff}
+.trow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trow .ln{font-family:var(--f-num);font-size:.67rem;opacity:.75;flex:none}
+.trow .x{flex:none;border:0;background:none;cursor:pointer;color:inherit;opacity:.55;padding:0 .2rem;font-size:.9rem}
+.trow .x:hover{opacity:1;color:var(--danger)}
+
+#readout{position:absolute;left:8px;bottom:8px;z-index:5;display:flex;align-items:flex-end;gap:8px;pointer-events:none}
+#scalebar{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:.25rem .4rem;box-shadow:var(--shadow)}
+#scalebar .bar{height:5px;border:1px solid var(--ink);border-top:none;box-sizing:border-box}
+#scalebar span{font-family:var(--f-num);font-size:.64rem;color:var(--ink-2)}
+#coord{background:var(--panel);border:1px solid var(--line);border-radius:3px;padding:.3rem .45rem;
+  font-family:var(--f-num);font-size:.64rem;color:var(--ink-2);box-shadow:var(--shadow);white-space:nowrap}
+#compass{position:absolute;right:8px;bottom:8px;z-index:5;pointer-events:none}
+#gpsbar{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;z-index:7;display:flex;gap:6px}
+#toast{position:absolute;left:50%;transform:translateX(-50%);bottom:64px;z-index:9;background:var(--ink);
+  color:var(--ground);padding:.4rem .75rem;border-radius:3px;font-size:.8rem;box-shadow:var(--shadow);
+  opacity:0;transition:opacity .2s;pointer-events:none;max-width:74vw;text-align:center}
+#toast.on{opacity:1}
+@media (prefers-reduced-motion:reduce){#toast{transition:none}}
+
+dialog{border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);
+  max-width:min(620px,94vw);width:100%;box-shadow:var(--shadow);padding:0}
+dialog::backdrop{background:rgba(0,0,0,.5)}
+dialog .body{padding:.9rem}
+dialog h2{font-family:var(--f-ui);margin:.1rem 0 .5rem;font-size:1rem;letter-spacing:.05em;text-transform:uppercase}
+dialog textarea{width:100%;box-sizing:border-box;height:42vh;font-family:var(--f-num);font-size:.7rem;
+  background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:3px;padding:.4rem}
+dl.keys{display:grid;grid-template-columns:auto 1fr;gap:.25rem .7rem;margin:0;font-size:.8rem}
+dl.keys dt{font-family:var(--f-num);font-size:.72rem;color:var(--blaze);white-space:nowrap}
+dl.keys dd{margin:0;color:var(--ink-2)}
+
+/* first-run / no map loaded */
+#welcome{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;
+  background:var(--ground);padding:16px;box-sizing:border-box}
+#welcome .inner{max-width:420px;width:100%}
+#welcome h2{font-family:var(--f-ui);font-size:1.5rem;letter-spacing:.03em;margin:0 0 .3rem;text-transform:uppercase}
+#welcome p{margin:.45rem 0;line-height:1.5;color:var(--ink-2);font-size:.85rem}
+#welcome .btn{width:100%;margin-top:.8rem;min-height:42px;font-size:1rem}
+
+@media (max-width:760px){
+  .rail{width:calc(100% - 16px);max-height:52%}
+  #insp{top:auto;left:8px;right:8px;bottom:52px;width:auto;max-height:46%}
+  #readout{bottom:auto;top:8px;right:8px;left:auto;flex-direction:column;align-items:flex-end}
+  #compass{display:none}
+  .btn{min-height:38px}
+  .btn.sm{min-height:32px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1 id="title">Hunt Map</h1>
+    <div class="sub" id="subline"></div>
+    <div id="savestate" data-s="local">&mdash;</div>
+  </header>
+  <div id="stage">
+    <canvas id="map"></canvas>
+
+    <div class="rail" id="rail">
+      <div class="card">
+        <h2>Tool <button class="btn sm" id="railhide" title="Hide panel" style="padding:0 .3rem;min-height:0;line-height:1.1">&laquo;</button></h2>
+        <div class="body">
+          <div class="row g2" id="tools">
+            <button class="btn" data-tool="pan" aria-pressed="true">Pan</button>
+            <button class="btn" data-tool="edit">Edit</button>
+            <button class="btn" data-tool="draw">Draw</button>
+            <button class="btn" data-tool="erase">Erase box</button>
+            <button class="btn" data-tool="mark" style="grid-column:1/-1">Drop pin</button>
+          </div>
+          <label class="field"><span>Pin type — used by Drop pin and Mark here</span><select id="pintype"></select></label>
+          <div class="hint" id="toolhint"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="clickable" data-toggle="tlistbody">Trails <span class="c" id="tcount">&mdash;</span></h2>
+        <div class="body" id="tlistbody">
+          <div id="tlist"></div>
+          <div class="row">
+            <button class="btn sm" id="selall">Select all</button>
+            <button class="btn sm" id="selnone">None</button>
+            <button class="btn sm danger" id="delsel">Delete picked</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Layers</h2>
+        <div class="body">
+          <label class="chk"><input type="checkbox" id="L-aerial" checked><span class="swatch" style="background:#5d7a4a"></span>Aerial</label>
+          <label class="chk"><input type="checkbox" id="L-hill"><span class="swatch" style="background:#8a8a8a"></span>Hillshade</label>
+          <label class="chk"><input type="checkbox" id="L-cont" checked><span class="swatch" style="background:var(--clay)"></span>Contours</label>
+          <label class="chk"><input type="checkbox" id="L-parcel" checked><span class="swatch" style="background:#e8c53a"></span>Property line</label>
+          <label class="chk"><input type="checkbox" id="L-trail" checked><span class="swatch" style="background:var(--blaze)"></span>Trails</label>
+          <label class="chk"><input type="checkbox" id="L-labels" checked><span class="swatch" style="background:#fff;border:1px solid var(--line)"></span>Trail names</label>
+          <label class="chk"><input type="checkbox" id="L-pins" checked><span class="swatch" style="background:var(--water)"></span>Pins</label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="clickable" data-toggle="nudgebody">Shift all trails</h2>
+        <div class="body" id="nudgebody" hidden>
+          <div class="hint">GPS drift moves the whole track together. Nudge the set before fixing single lines.</div>
+          <div class="row">
+            <button class="btn sm" data-nudge="0,-1">N</button>
+            <button class="btn sm" data-nudge="0,1">S</button>
+            <button class="btn sm" data-nudge="1,0">E</button>
+            <button class="btn sm" data-nudge="-1,0">W</button>
+            <button class="btn sm" data-rot="-0.5">&#8634;</button>
+            <button class="btn sm" data-rot="0.5">&#8635;</button>
+            <button class="btn sm" data-scl="0.99">&minus;</button>
+            <button class="btn sm" data-scl="1.01">+</button>
+          </div>
+          <div class="stat" id="nudgestat"></div>
+          <div class="row">
+            <button class="btn sm" id="nudgeapply">Bake in</button>
+            <button class="btn sm" id="nudgereset">Reset</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Map</h2>
+        <div class="body">
+          <div class="row g2">
+            <button class="btn sm" id="undo">Undo</button>
+            <button class="btn sm" id="redo">Redo</button>
+            <button class="btn sm" id="fit">Fit</button>
+            <button class="btn sm" id="keysbtn">Keys</button>
+            <button class="btn sm" id="briefbtn" style="grid-column:1/-1">Hunt briefing</button>
+            <button class="btn sm" id="importbtn">Import</button>
+            <button class="btn sm" id="exportbtn">Export</button>
+          </div>
+          <input type="file" id="filein" accept=".gpx,.geojson,.json,.xml" multiple hidden>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn sm" id="railshow" hidden style="position:absolute;top:8px;left:8px;z-index:7;background:var(--panel);box-shadow:var(--shadow)">&raquo; Tools</button>
+
+    <div class="card" id="insp" hidden>
+      <h2 id="insp-title">Selection</h2>
+      <div class="body" id="insp-body"></div>
+    </div>
+
+    <div id="gpsbar">
+      <button class="btn sm" id="gpsbtn" aria-pressed="false">Locate</button>
+      <button class="btn sm go" id="markhere" disabled>Mark here</button>
+      <button class="btn sm" id="avgbtn" disabled>Hold 30s</button>
+      <button class="btn sm rec" id="recbtn" aria-pressed="false" disabled>Record</button>
+    </div>
+
+    <div id="readout">
+      <div id="scalebar"><span id="scaletext">100 m</span><div class="bar" id="scalerule" style="width:80px"></div></div>
+      <div id="coord">&mdash;</div>
+    </div>
+    <svg id="compass" width="44" height="44" viewBox="0 0 46 46" aria-hidden="true">
+      <circle cx="23" cy="23" r="20" fill="var(--panel)" stroke="var(--line)"></circle>
+      <path d="M23 6 L28 26 L23 22 L18 26 Z" fill="var(--blaze)"></path>
+      <text x="23" y="40" text-anchor="middle" font-family="Barlow Condensed,sans-serif" font-size="11" fill="var(--ink-2)">N</text>
+    </svg>
+    <div id="toast" role="status" aria-live="polite"></div>
+
+    <div id="welcome">
+      <div class="inner">
+        <h2>Hunt Map</h2>
+        <p>No map loaded on this device yet. Import your map pack file — the aerial, contours, property lines and trails all live inside it.</p>
+        <p>Nothing you load is sent anywhere. It stays in this browser, on this device, and works with no signal once it's in.</p>
+        <button class="btn go" id="loadpack">Import map pack</button>
+        <button class="btn" id="startblank">Start with a blank map</button>
+        <input type="file" id="packin" accept=".json,.huntpack,.huntpack.json" hidden>
+        <p class="hint" style="margin-top:.9rem">On iPhone: Share &rarr; Add to Home Screen once it's loaded, and it opens full screen and works offline.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<dialog id="importdlg"><div class="body">
+  <h2>Imported GPS</h2>
+  <div id="importsummary" class="hint" style="margin:.2rem 0 .7rem"></div>
+  <div class="row g2" style="max-width:340px">
+    <button class="btn sm" id="imp-add">Add as new lines</button>
+    <button class="btn sm" id="imp-replace">Replace picked line</button>
+    <button class="btn sm" id="imp-pins">Waypoints as pins</button>
+    <button class="btn sm" data-close>Cancel</button>
+  </div>
+  <div class="hint" style="margin-top:.6rem">Tracks are thinned to about 3&nbsp;m and poor fixes dropped, so a walk under canopy comes in usable.</div>
+</div></dialog>
+
+<dialog id="exportdlg"><div class="body">
+  <h2 id="exporttitle">Export</h2>
+  <p class="hint" id="exporthint" style="margin:.1rem 0 .5rem"></p>
+  <textarea id="exporttext" readonly spellcheck="false"></textarea>
+  <div class="row" style="margin-top:.5rem">
+    <button class="btn sm" id="copytext">Copy</button>
+    <button class="btn sm" id="savefile">Save file</button>
+    <button class="btn sm" id="sharefile" hidden>Share</button>
+    <button class="btn sm" data-close>Close</button>
+  </div>
+</div></dialog>
+
+<dialog id="keysdlg"><div class="body">
+  <h2>Editing</h2>
+  <dl class="keys">
+    <dt>V / E / D / X</dt><dd>Pan, Edit, Draw, Erase box</dd>
+    <dt>Tap a line</dt><dd>Pick it up; its points appear</dd>
+    <dt>Drag a point</dt><dd>Move it</dd>
+    <dt>A / R</dt><dd>Add-point and remove-point modes</dd>
+    <dt>Alt + tap a point</dt><dd>Remove it</dd>
+    <dt>Double-tap a line</dt><dd>Add a point there</dd>
+    <dt>Tap two points</dt><dd>Marks the stretch between them &mdash; then Straighten, Cut out or Redraw</dd>
+    <dt>Erase box</dt><dd>Drag a box over what isn't trail. Shift deletes whole lines</dd>
+    <dt>Arrow keys</dt><dd>Nudge the marked point; none marked slides the whole line</dd>
+    <dt>Ctrl/Cmd + Z</dt><dd>Undo (Shift to redo)</dd>
+  </dl>
+  <div class="row" style="margin-top:.7rem"><button class="btn sm" data-close>Close</button></div>
+</div></dialog>
+
+<script src="app.js"></script>
+</body>
+</html>
