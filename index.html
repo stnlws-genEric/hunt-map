@@ -115,10 +115,14 @@ label.chk input{accent-color:var(--blaze);margin:0;width:16px;height:16px}
   font-family:var(--f-num);font-size:.64rem;color:var(--ink-2);box-shadow:var(--shadow);white-space:nowrap}
 #compass{position:absolute;right:8px;bottom:8px;z-index:5;pointer-events:none}
 #gpsbar{position:absolute;left:50%;transform:translateX(-50%);bottom:8px;z-index:7;display:flex;gap:6px}
+/* The toast and the place bar both live at the bottom centre, so a toast fired
+   while placing sat straight on top of the Place here button. Lift it clear
+   whenever the bar is up. */
 #toast{position:absolute;left:50%;transform:translateX(-50%);bottom:64px;z-index:9;background:var(--ink);
   color:var(--ground);padding:.4rem .75rem;border-radius:3px;font-size:.8rem;box-shadow:var(--shadow);
   opacity:0;transition:opacity .2s;pointer-events:none;max-width:74vw;text-align:center}
 #toast.on{opacity:1}
+body.placing #toast{bottom:calc(var(--gpsbar-h, 56px) + 112px + env(safe-area-inset-bottom,0px))}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
 
 dialog{border:1px solid var(--line);border-radius:5px;background:var(--panel);color:var(--ink);
@@ -201,6 +205,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
   }
   #placebar{bottom:calc(var(--sheet-h,108px) + 10px)}
   #toast{bottom:calc(var(--sheet-h,108px) + 12px)}
+  body.placing #toast{bottom:calc(var(--sheet-h,108px) + 118px)}
   #railshow{display:none}
 }
 #advanced{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
@@ -344,7 +349,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
     </div>
 
     <div id="placebar" hidden>
-      <div class="pbwhat">Placing <b id="placewhat">Stand</b></div>
+      <div class="pbwhat" id="placelead">Placing <b id="placewhat">Stand</b></div>
       <div class="pbcoord" id="placecoord">&mdash;</div>
       <div class="pbrow">
         <button class="btn sm" id="placecancel">Cancel</button>

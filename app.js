@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 20;
+const BUILD = 21;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -77,6 +77,12 @@ let seedDone = [];                  // seed ids already merged, so a deletion st
 let sitOpen = null;          // the sit in progress, if any
 let selT = new Set(), primary = null, selPin = null, anchors = [];
 let tool = "pan", editMode = "move", arrowPushed = false;
+/* What the crosshair is currently aiming at. {what:"pin"} drops a new pin of the
+   selected type; {what:"recovery", ...} marks where a deer was shot from, hit or
+   found. Before this existed the recovery buttons silently snapshotted the centre
+   of the canvas with no crosshair shown and no chance to aim — and the toast
+   claimed "at the crosshair" when none had been drawn. */
+let placing = null;
 let layers = {aerial:true, cont:true, parcel:true, trail:true, labels:true, pins:true};
 let nudge = {dx:0, dy:0, rot:0, scl:1};
 let draft = null, eraseBox = null, pending = null;
@@ -496,11 +502,40 @@ function drawFix(){
   ctx.fillStyle = "#1e90ff"; ctx.fill();
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; ctx.stroke();
 }
+/* The crosshair has to sit in the middle of the map you can SEE, which is not the
+   middle of the canvas. The canvas runs full-bleed underneath the panel, so on a
+   laptop the panel covers the left ~230 px and the raw centre lands well left of
+   where your eye puts the middle — about 116 px out on a 1280 px window, which is
+   a real distance on the ground. On a phone the sheet covers the bottom instead,
+   and the error runs the other way. */
+function mapCentre(){
+  const cr = cv.getBoundingClientRect();
+  let left = 0, right = 0, bottom = 0;
+  /* Both floating panels eat into the map: the tool rail on the left, the
+     inspector on the right, and on a phone each of them spans the width and sits
+     along the bottom instead. Measure whichever are actually on screen. */
+  for(const [id, side] of [["rail", "left"], ["insp", "right"]]){
+    const el = document.getElementById(id);
+    if(!el || el.hidden || !el.getClientRects().length) continue;
+    const b = el.getBoundingClientRect();
+    if(b.width > cr.width * 0.6){ bottom = Math.max(bottom, cr.bottom - b.top); continue; }
+    if(side === "left") left  = Math.max(left,  b.right - cr.left);
+    else                right = Math.max(right, cr.right - b.left);
+  }
+  left = Math.max(0, left); right = Math.max(0, right); bottom = Math.max(0, bottom);
+  /* If the panels between them leave no room, fall back to the whole canvas
+     rather than returning a centre outside it. */
+  if(left + right >= W - 40){ left = right = 0; }
+  if(bottom >= H - 40) bottom = 0;
+  return [(left + (W - right)) / 2, (H - bottom) / 2];
+}
+
 function drawCrosshair(){
-  /* Locked at screen centre: you pan the map under it instead of stabbing at the
-     glass, which is the only way to be accurate one-handed in the woods. Same
-     casing trick as the contours so it reads over sand and over timber. */
-  const X = Math.round(W/2), Y = Math.round(H/2), R1 = 16, GAP = 5;
+  /* Locked at the centre of the visible map: you pan under it instead of stabbing
+     at the glass, which is the only way to be accurate one-handed in the woods.
+     Same casing trick as the contours so it reads over sand and over timber. */
+  const c = mapCentre();
+  const X = Math.round(c[0]), Y = Math.round(c[1]), R1 = 16, GAP = 5;
   const arm = (dx, dy) => {
     ctx.beginPath();
     ctx.moveTo(X+dx*GAP, Y+dy*GAP); ctx.lineTo(X+dx*R1, Y+dy*R1);
@@ -614,16 +649,25 @@ function syncPlacing(){
   if(!bar) return;
   const on = tool === "mark";
   bar.hidden = !on;
+  document.body.classList.toggle("placing", on);
   if(!on) return;
-  const w = atScreen(W/2, H/2), ll = worldToLL(w[0], w[1]);
+  const c = mapCentre();
+  const w = atScreen(c[0], c[1]), ll = worldToLL(w[0], w[1]);
   let txt = fmtLL(ll[0], ll[1]);
   if(fix){
     const fw = llToWorld(fix.lon, fix.lat);
     txt += "  ·  " + fmtDist(Math.hypot(w[0]-fw[0], w[1]-fw[1]) * MPP()) + " from you";
   }
   document.getElementById("placecoord").textContent = txt;
+  const rec = placing && placing.what === "recovery";
+  /* "Placing" is a static word in the markup, so a recovery label was reading
+     "Placing Marking shot from". Swap the lead word instead of stacking verbs. */
+  const lead = document.getElementById("placelead");
+  lead.firstChild.nodeValue = rec ? "Marking " : "Placing ";
   document.getElementById("placewhat").textContent =
-    (PINS[document.getElementById("pintype").value] || PINS.note).label;
+    rec ? placing.label.toLowerCase()
+        : (PINS[document.getElementById("pintype").value] || PINS.note).label;
+  document.getElementById("placego").textContent = rec ? "Mark here" : "Place here";
 }
 
 /* ---------- hit tests ---------- */
@@ -1058,6 +1102,8 @@ const HINTS = {
 };
 function setTool(t, keepDraft){
   tool = t;
+  if(t !== "mark") placing = null;
+  else if(!placing) placing = {what:"pin"};
   document.querySelectorAll("#tools .btn, #tools2 .btn").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
   document.getElementById("toolhint").textContent = HINTS[t];
   if(t !== "edit") editMode = "move";
@@ -1175,7 +1221,10 @@ function stopRecording(){
   after("Walked line saved — " + fmtDist(lenOf(t.p)) + ". Name it, or use it to replace an old line.");
 }
 function centerOn(x, y){
-  view.tx = W/2 - x*view.k; view.ty = H/2 - y*view.k; draw();
+  /* Centre on the visible map, not the canvas, so a point you centre on lands
+     under the crosshair rather than behind the panel. */
+  const c = mapCentre();
+  view.tx = c[0] - x*view.k; view.ty = c[1] - y*view.k; draw();
 }
 
 /* ---------- weather (National Weather Service, free, no key) ----------
@@ -2105,8 +2154,13 @@ function renderPin(box, body){
       const b = el("button", {class:"btn sm"},
                    [has ? label + " \u2713" : "Mark " + label.toLowerCase()]);
       b.onclick = () => {
-        p[key] = fix ? llToWorld(fix.lon, fix.lat) : atScreen(W/2, H/2);
-        after(label + " marked" + (fix ? " at your GPS fix." : " at the crosshair."));
+        /* Arm the crosshair rather than grabbing a point behind your back. If GPS
+           has a fix we centre on it first, so standing where it happened is still
+           one tap — but you can pan off it, which matters when you are marking the
+           hit site from fifty yards away with a rifle still in your hands. */
+        if(fix) centerOn(...llToWorld(fix.lon, fix.lat));
+        placing = {what:"recovery", pinId:p.id, key, label};
+        setTool("mark");
       };
       return b;
     };
@@ -2166,7 +2220,7 @@ function nearestStand(w){
   return best;
 }
 async function startSit(){
-  const w = fix ? llToWorld(fix.lon, fix.lat) : atScreen(W/2, H/2);
+  const w = fix ? llToWorld(fix.lon, fix.lat) : atScreen(...mapCentre());
   const st = nearestStand(w);
   const wx = await getWeather().catch(() => null);
   const now = new Date(), mn = moonInfo(now);
@@ -2419,7 +2473,9 @@ function nudgeStat(){
     nudge.rot.toFixed(1) + "° · " + Math.round(nudge.scl*100) + "%";
 }
 for(const box of ["tools","tools2"]) document.getElementById(box).addEventListener("click", e => {
-  const b = e.target.closest("[data-tool]"); if(b) setTool(b.dataset.tool);
+  const b = e.target.closest("[data-tool]");
+  /* Pressing Drop pin always means a new pin, even if a recovery mark was armed. */
+  if(b){ if(b.dataset.tool === "mark") placing = {what:"pin"}; setTool(b.dataset.tool); }
 });
 document.querySelectorAll("[data-toggle]").forEach(h => h.addEventListener("click", () => {
   const b = document.getElementById(h.dataset.toggle); b.hidden = !b.hidden;
@@ -2667,8 +2723,20 @@ document.getElementById("walkbtn").onclick = armWalk;
 document.getElementById("sitbtn").onclick = () => { sitOpen ? endSit() : startSit(); };
 
 document.getElementById("placego").onclick = () => {
+  const at = atScreen(...mapCentre());
+  if(placing && placing.what === "recovery"){
+    const p = pins.find(x => x.id === placing.pinId);
+    if(!p){ toast("That pin is gone."); setTool("pan"); return; }
+    push();
+    p[placing.key] = at;
+    const label = placing.label;
+    setTool("pan");
+    after(label + " marked at the crosshair.");
+    selPin = p.id; renderInsp();
+    return;
+  }
   const t = document.getElementById("pintype").value;
-  dropPin(atScreen(W/2, H/2), t);
+  dropPin(at, t);
   toast((PINS[t] || PINS.note).label + " dropped at the crosshair.");
   setTool("pan");
 };
