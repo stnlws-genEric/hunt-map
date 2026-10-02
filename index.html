@@ -128,8 +128,13 @@ label.chk input{accent-color:var(--blaze);margin:0;width:16px;height:16px}
 #updatebar{position:absolute;left:50%;transform:translateX(-50%);top:10px;z-index:10;
   background:var(--panel);box-shadow:var(--shadow);border:1px solid var(--blaze);
   border-radius:10px;padding:.4rem .5rem;display:flex;gap:.4rem;align-items:center;
-  max-width:min(26rem,94vw);font-size:.85rem}
-#updatebar span{padding:0 .2rem}
+  /* left:50% + translateX(-50%) makes the shrink-to-fit width resolve against
+     only the half-width to the right of that point, which squeezed three words
+     into a column. max-content sizes to the content first, then the transform
+     centres it. */
+  width:max-content; max-width:min(26rem,92vw); font-size:.85rem}
+#updatebar span{padding:0 .2rem; white-space:nowrap}
+#updatebar .btn{flex:0 0 auto; white-space:nowrap}
 body.placing #toast{bottom:calc(var(--gpsbar-h, 56px) + 112px + env(safe-area-inset-bottom,0px))}
 @media (prefers-reduced-motion:reduce){#toast{transition:none}}
 

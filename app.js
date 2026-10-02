@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 25;
+const BUILD = 26;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -3049,13 +3049,42 @@ function showStorage(){
       : "";
 }
 
-/* A new build takes over without you deleting anything. */
-function offerUpdate(){
+/* A new build takes over without you deleting anything.
+
+   This used to hang entirely off the service worker's updatefound event, which
+   is the textbook way and does not survive contact with an iPhone. A home-screen
+   web app gets frozen rather than closed, so the worker can quietly update while
+   the page sleeps; by the time you open it there is no "update found" left to
+   fire, and the page sits on old code with nothing to tell it. Asking the server
+   outright is boring and it works: one tiny file, one number, compared with the
+   number compiled into this build. */
+let offeredBuild = 0;
+function offerUpdate(build){
   const bar = document.getElementById("updatebar");
-  if(!bar || !bar.hidden) return;
+  if(!bar) return;
+  if(build && build <= offeredBuild) return;
+  offeredBuild = build || offeredBuild;
+  document.getElementById("updatetext").textContent =
+    build ? "Build " + build + " is ready." : "A newer build is ready.";
   bar.hidden = false;
-  document.getElementById("updatego").onclick = () => location.reload();
+  document.getElementById("updatego").onclick = hardReload;
   document.getElementById("updatelater").onclick = () => { bar.hidden = true; };
+}
+/* Clear the shell cache before reloading, so a stale cached asset cannot survive
+   the trip. Your pins live in IndexedDB and are not touched by this. */
+async function hardReload(){
+  try{
+    if(window.caches) for(const k of await caches.keys()) await caches.delete(k);
+  }catch(_){}
+  location.reload();
+}
+async function checkForUpdate(){
+  try{
+    const r = await fetch("version.json?t=" + Date.now(), {cache:"no-store"});
+    if(!r.ok) return;
+    const v = await r.json();
+    if(v && typeof v.build === "number" && v.build > BUILD) offerUpdate(v.build);
+  }catch(_){}                              // offline: nothing to say, try later
 }
 
 /* ---------- seed data ----------
@@ -3242,7 +3271,14 @@ window.addEventListener("orientationchange", () => setTimeout(() => { placeInspe
   document.getElementById("syncgo").onclick = () => syncNow(true);
   document.getElementById("syncoff").onclick = disconnectSync;
   window.addEventListener("online", () => syncNow(false));
-  document.addEventListener("visibilitychange", () => { if(!document.hidden) syncNow(false); });
+  document.addEventListener("visibilitychange", () => {
+    if(document.hidden) return;
+    syncNow(false);
+    checkForUpdate();
+  });
+  window.addEventListener("online", checkForUpdate);
+  /* Not on the very first paint — let the map come up first. */
+  setTimeout(checkForUpdate, 3000);
   if("serviceWorker" in navigator && location.protocol.startsWith("http")){
     try{
       const reg = await navigator.serviceWorker.register("sw.js");
@@ -3252,7 +3288,7 @@ window.addEventListener("orientationchange", () => setTimeout(() => { placeInspe
         sw.addEventListener("statechange", () => {
           /* controller means this page is already running under a service worker,
              so an install now is an update rather than the very first one. */
-          if(sw.state === "installed" && navigator.serviceWorker.controller) offerUpdate();
+          if(sw.state === "installed" && navigator.serviceWorker.controller) checkForUpdate();
         });
       });
       /* Check again whenever the app comes back to the foreground, which on a
