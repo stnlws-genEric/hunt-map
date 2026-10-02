@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 18;
+const BUILD = 19;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -857,7 +857,13 @@ cv.addEventListener("pointerdown", e => {
     draft.pts.push(atScreen(px, py)); draw(); return;
   }
   if(tool === "erase"){ eraseBox = {x0:px, y0:py, x1:px, y1:py, shift:e.shiftKey}; drag = {mode:"erase"}; return; }
-  if(tool === "mark"){ dropPin(atScreen(px, py), document.getElementById("pintype").value); setTool("pan"); return; }
+  /* Placing a pin is pan-only. Tapping to drop used to be allowed as well, but on a
+     phone your first touch to move the map IS a tap, so the pin landed under your
+     finger before you could scroll. The crosshair plus Place here is the single way in. */
+  if(tool === "mark"){
+    drag = {mode:"pan", px, py, tx:view.tx, ty:view.ty, moved:false, click:null};
+    return;
+  }
 
   const hp = hitPin(px, py);
   if(hp){
@@ -1047,7 +1053,7 @@ const HINTS = {
   edit:"Tap a line to pick it up. Drag its points; tap two points to mark a stretch.",
   draw:"Tap along the route. Double-tap to finish. Start on a loose end to extend that line.",
   erase:"Drag a box over what isn't trail. Shift deletes whole lines.",
-  mark:"Pick a type, then tap where it goes. Or use Mark here to drop one at your GPS position."
+  mark:"Move the map so the crosshair sits where the pin goes, then press Place here. Mark here drops one at your GPS fix instead."
 };
 function setTool(t, keepDraft){
   tool = t;
