@@ -331,6 +331,32 @@ dl.keys dd{margin:0;color:var(--ink-2)}
       </div>
 
       <div class="card">
+        <h2>Sync</h2>
+        <div class="body" id="syncbody">
+          <div id="syncsetup">
+            <p class="hint" style="margin:0 0 .4rem">Keeps your pins, trails and sits level across devices
+              through a <b>private</b> GitHub repo you own. The map itself ships with the app, so only
+              your own work travels. Nothing is public and nothing costs money.</p>
+            <label class="field"><span>Your GitHub username</span><input id="syncowner" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Private repo name</span><input id="syncrepo" value="hunt-map-data" autocomplete="off" spellcheck="false"></label>
+            <label class="field"><span>Token</span><input id="synctoken" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_..."></label>
+            <label class="field"><span>Call this device</span><input id="syncdevice" placeholder="phone" autocomplete="off"></label>
+            <p class="hint" style="margin:.3rem 0 .45rem">The token is stored on this device only and never
+              leaves it except to talk to GitHub. If you lose this device, revoke the token on github.com
+              and it is dead.</p>
+            <button class="btn sm" id="syncconnect" style="width:100%">Turn sync on</button>
+          </div>
+          <div id="syncon" hidden>
+            <div class="stat" id="syncwhere"></div>
+            <div class="stat" id="syncstate"></div>
+            <div class="row g2" style="margin-top:.35rem">
+              <button class="btn sm" id="syncgo">Sync now</button>
+              <button class="btn sm" id="syncoff">Disconnect</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
         <h2>Map</h2>
         <div class="body">
           <div class="row g2">

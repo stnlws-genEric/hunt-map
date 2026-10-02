@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 22;
+const BUILD = 23;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -1861,7 +1861,7 @@ function showExport(title, hint, text, filename){
 }
 function backupBlob(){
   return {format:"huntmap-state/1", savedAt:new Date().toISOString(),
-          map:(D && D.name) || "", trails, pins, sits, sitOpen, nudge, seedDone};
+          map:(D && D.name) || "", trails, pins, sits, sitOpen, nudge, seedDone, graves};
 }
 document.getElementById("backupbtn").onclick = () =>
   showExport("Backup", "Everything exactly as it is here. Send it to your other device and use Import to restore it.",
@@ -2607,13 +2607,247 @@ async function doSave(){
   if(saving) return;
   saving = true;
   try{
-    await DB.set("state", {v:3, trails, pins, sits, sitOpen, nudge, seedDone, at:new Date().toISOString()});
+    stampChanges();
+    await DB.set("state", {v:4, trails, pins, sits, sitOpen, nudge, seedDone, graves,
+                           at:new Date().toISOString()});
     dirty = false; setSave("saved", "Saved");
+    syncSoon();
   }catch(_){ setSave("local", "Save failed"); }
   finally{
     saving = false;
     if(dirty){ clearTimeout(saveT); saveT = setTimeout(doSave, 700); }
   }
+}
+
+/* ---------- sync between devices ----------
+   The map pack is the ground and it ships with the app. This is the other half:
+   the pins, trails and sits you actually make, which until now lived on whichever
+   device made them and reached the other one only if you remembered to export a
+   backup and import it. Nobody remembers that while field-dressing a deer.
+
+   The store is one JSON file in a private GitHub repo you own. No server to run,
+   nothing to pay for, and you can revoke access from github.com in two clicks if
+   a phone goes missing. What travels is pins, trails and sits. What stays local
+   is the map nudge (a per-device alignment tweak), any sit currently in progress,
+   and the seed bookkeeping — none of those mean the same thing on another device.
+
+   The merge is last-write-wins per record, not per file, so two devices edited
+   while apart both keep their work. Deletions carry a tombstone, because without
+   one a record you deleted on the phone simply comes back from the laptop. */
+
+const SYNCV = 1;
+let graves = {};                 // id -> when it was deleted
+let lastSnap = null;             // last saved shape, for working out what changed
+let syncing = false, syncT = null, syncStat = {state:"off", msg:""};
+
+const GRAVE_TTL = 180 * 864e5;   // tombstones are not needed forever
+
+/* ---------- what changed ----------
+   Stamping every mutation site by hand means missing one, and a missed stamp is
+   a change that silently never syncs. So nothing is stamped at the point of
+   edit: on each save we diff against the last saved shape and stamp whatever
+   actually moved. One place to be right. */
+function collOf(arr){
+  const o = {};
+  for(const r of arr) o[r.id] = JSON.stringify(r, (k, v) => k === "m" ? undefined : v);
+  return o;
+}
+function stampChanges(){
+  const now = Date.now();
+  const cur = {pins:collOf(pins), trails:collOf(trails), sits:collOf(sits)};
+  for(const [name, arr] of [["pins", pins], ["trails", trails], ["sits", sits]]){
+    const prev = lastSnap && lastSnap[name];
+    for(const r of arr){
+      /* A record that is back after being deleted — undo, or a re-import — must
+         lose its tombstone, or the merge will dutifully delete it again. */
+      if(graves[r.id]){ delete graves[r.id]; r.m = now; continue; }
+      if(!r.m){ r.m = now; continue; }
+      if(!prev) continue;
+      if(prev[r.id] === undefined || prev[r.id] !== cur[name][r.id]) r.m = now;
+    }
+    if(prev) for(const id in prev) if(cur[name][id] === undefined) graves[id] = now;
+  }
+  const cut = now - GRAVE_TTL;
+  for(const id in graves) if(graves[id] < cut) delete graves[id];
+  lastSnap = cur;
+}
+function refreshSnap(){ lastSnap = {pins:collOf(pins), trails:collOf(trails), sits:collOf(sits)}; }
+
+/* ---------- the merge ----------
+   Commutative and idempotent on purpose: running it twice, or running it on each
+   device in either order, lands on the same answer. That is what stops two
+   devices ping-ponging edits at each other. */
+function mergeColl(local, remote, gr){
+  const by = new Map();
+  for(const r of local) by.set(r.id, r);
+  for(const r of remote){
+    const cur = by.get(r.id);
+    if(!cur || (r.m || 0) > (cur.m || 0)) by.set(r.id, r);
+  }
+  const out = [];
+  for(const r of by.values()) if(!((gr[r.id] || 0) > (r.m || 0))) out.push(r);
+  return out;
+}
+function mergeGraves(a, b){
+  const o = Object.assign({}, a);
+  for(const id in b) if(!o[id] || b[id] > o[id]) o[id] = b[id];
+  return o;
+}
+/* Stable shape for "is this the same as what is already up there", so an idle
+   app does not rewrite the file every time it checks. */
+const canon = o => JSON.stringify({
+  pins:   [...(o.pins   || [])].sort((x, y) => (x.id > y.id ? 1 : -1)),
+  trails: [...(o.trails || [])].sort((x, y) => (x.id > y.id ? 1 : -1)),
+  sits:   [...(o.sits   || [])].sort((x, y) => (x.id > y.id ? 1 : -1)),
+  graves: Object.keys(o.graves || {}).sort().reduce((m, k) => (m[k] = o.graves[k], m), {})
+});
+
+/* ---------- the GitHub side ---------- */
+const GHAPI = "https://api.github.com";
+function b64encode(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for(let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+const b64decode = s =>
+  new TextDecoder().decode(Uint8Array.from(atob(String(s).replace(/\s/g, "")), c => c.charCodeAt(0)));
+
+function ghErr(status){
+  if(status === 401) return "GitHub rejected the token — it may have expired or been revoked";
+  if(status === 403) return "GitHub refused it — check the token has Contents: Read and write on that repo";
+  if(status === 404) return "repo or file not found — check the owner and repo name, and that the token covers it";
+  if(status === 429) return "GitHub is rate-limiting — it will go through on the next try";
+  return "GitHub returned " + status;
+}
+const ghHead = cfg => ({Authorization:"Bearer " + cfg.token,
+  Accept:"application/vnd.github+json", "X-GitHub-Api-Version":"2022-11-28"});
+const ghUrl = cfg => GHAPI + "/repos/" + cfg.owner + "/" + cfg.repo + "/contents/" + cfg.path;
+
+async function ghGet(cfg){
+  const r = await fetch(ghUrl(cfg) + "?t=" + Date.now(), {headers:ghHead(cfg), cache:"no-store"});
+  if(r.status === 404) return {missing:true};
+  if(!r.ok) throw new Error(ghErr(r.status));
+  const j = await r.json();
+  let data;
+  try{ data = JSON.parse(b64decode(j.content)); }
+  catch(_){ throw new Error("the file up there is not readable — rename it on GitHub and the app will start a fresh one"); }
+  return {sha:j.sha, data};
+}
+async function ghPut(cfg, text, sha, msg){
+  const body = {message:msg, content:b64encode(text)};
+  if(sha) body.sha = sha;
+  const r = await fetch(ghUrl(cfg), {method:"PUT", headers:ghHead(cfg), body:JSON.stringify(body)});
+  /* 409 is a straight conflict; 422 is what you get for a stale or missing sha
+     on a file that does exist. Both mean the same thing: somebody else wrote
+     between our read and our write, so read again and redo the merge. */
+  if(r.status === 409 || r.status === 422) return {conflict:true};
+  if(!r.ok) throw new Error(ghErr(r.status));
+  const j = await r.json();
+  return {sha:j.content && j.content.sha};
+}
+
+/* ---------- the loop ---------- */
+function setSyncStat(state, msg){ syncStat = {state, msg}; renderSync(); }
+const syncCfg = () => DB.get("sync");
+
+async function syncNow(manual){
+  const cfg = await syncCfg();
+  if(!cfg || !cfg.on || !cfg.token){ if(manual) toast("Sync is not set up on this device yet."); return false; }
+  if(syncing) return false;
+  syncing = true;
+  setSyncStat("working", "Syncing…");
+  try{
+    for(let attempt = 0; attempt < 3; attempt++){
+      const got = await ghGet(cfg);
+      const remote = got.missing ? {pins:[], trails:[], sits:[], graves:{}} : got.data;
+      const beforeN = pins.length + trails.length + sits.length;
+
+      graves = mergeGraves(graves, remote.graves || {});
+      pins   = mergeColl(pins,   remote.pins   || [], graves);
+      trails = mergeColl(trails, remote.trails || [], graves);
+      sits   = mergeColl(sits,   remote.sits   || [], graves);
+      const cut = Date.now() - GRAVE_TTL;
+      for(const id in graves) if(graves[id] < cut) delete graves[id];
+
+      /* The merged records carry their own timestamps. Re-baseline so the next
+         save does not read every one of them as freshly edited. */
+      refreshSnap();
+
+      const mine = {pins, trails, sits, graves};
+      if(!got.missing && canon(remote) === canon(mine)){
+        cfg.sha = got.sha; cfg.lastAt = Date.now(); cfg.lastErr = "";
+        await DB.set("sync", cfg);
+        setSyncStat("ok", "Up to date");
+        if(beforeN !== pins.length + trails.length + sits.length) after(null); else saveState();
+        return true;
+      }
+      const payload = JSON.stringify(Object.assign({v:SYNCV, at:new Date().toISOString(),
+                                                    device:cfg.device || "a device"}, mine));
+      const put = await ghPut(cfg, payload, got.missing ? null : got.sha,
+                              "Hunt Map sync from " + (cfg.device || "a device"));
+      if(put.conflict) continue;          // somebody wrote first; read and redo
+      cfg.sha = put.sha; cfg.lastAt = Date.now(); cfg.lastErr = "";
+      await DB.set("sync", cfg);
+      setSyncStat("ok", "Synced");
+      after(null);
+      return true;
+    }
+    setSyncStat("warn", "Another device kept beating us to it — try again in a moment");
+    return false;
+  }catch(err){
+    /* Offline is the normal case in the woods, not a failure worth shouting
+       about. Nothing is lost: the next trigger picks it up. */
+    const offline = !navigator.onLine || /NetworkError|Failed to fetch|Load failed/i.test(err.message || "");
+    const msg = offline ? "No signal — will sync when you have one" : (err.message || "Sync failed");
+    setSyncStat(offline ? "idle" : "err", msg);
+    try{ const c = await syncCfg(); if(c){ c.lastErr = offline ? "" : msg; await DB.set("sync", c); } }catch(_){}
+    if(manual && !offline) toast(msg);
+    return false;
+  }finally{ syncing = false; }
+}
+function syncSoon(){ clearTimeout(syncT); syncT = setTimeout(() => syncNow(false), 8000); }
+
+/* ---------- panel ---------- */
+async function renderSync(){
+  const box = document.getElementById("syncbody");
+  if(!box) return;
+  const cfg = await syncCfg();
+  const on = !!(cfg && cfg.on && cfg.token);
+  document.getElementById("syncsetup").hidden = on;
+  document.getElementById("syncon").hidden = !on;
+  if(!on) return;
+  const when = cfg.lastAt
+    ? (Date.now() - cfg.lastAt < 60000 ? "just now"
+       : Math.round((Date.now() - cfg.lastAt) / 60000) + " min ago")
+    : "never";
+  document.getElementById("syncwhere").textContent = cfg.owner + "/" + cfg.repo + " · as " + (cfg.device || "this device");
+  const s = document.getElementById("syncstate");
+  s.textContent = (syncStat.msg || "Ready") + " · last sync " + when;
+  s.dataset.s = syncStat.state;
+}
+
+async function connectSync(){
+  const owner = document.getElementById("syncowner").value.trim();
+  const repo  = document.getElementById("syncrepo").value.trim();
+  const token = document.getElementById("synctoken").value.trim();
+  const device = document.getElementById("syncdevice").value.trim() || (COARSE ? "phone" : "computer");
+  if(!owner || !repo || !token){ toast("Needs your GitHub username, the repo name, and the token."); return; }
+  const cfg = {on:true, owner, repo, token, device, path:"state.json", sha:null, lastAt:0, lastErr:""};
+  await DB.set("sync", cfg);
+  document.getElementById("synctoken").value = "";
+  setSyncStat("working", "Checking…");
+  const ok = await syncNow(true);
+  if(ok) toast("Sync is on. This device and any other you set up will stay level.");
+  renderSync();
+}
+async function disconnectSync(){
+  if(!confirm("Turn sync off and erase the token from this device?\n\nYour pins and trails stay here. The copy on GitHub is left alone.")) return;
+  await DB.del("sync");
+  setSyncStat("off", "");
+  renderSync();
+  toast("Sync off. The token is gone from this device.");
 }
 
 /* ---------- staying installed ----------
@@ -2714,6 +2948,8 @@ function startMap(pack, state){
   pins = (state && state.pins) || pack.pins || [];
   sits = (state && state.sits) || [];
   seedDone = (state && state.seedDone) || [];
+  graves = (state && state.graves) || {};
+  refreshSnap();
   sitOpen = (state && state.sitOpen) || null;
   nudge = (state && state.nudge) || {dx:0, dy:0, rot:0, scl:1};
   document.getElementById("title").textContent = pack.name || "Hunt Map";
@@ -2813,6 +3049,14 @@ window.addEventListener("orientationchange", () => setTimeout(() => { resize(); 
     if(pack){ startMap(pack, await DB.get("state")); await mergeSeed(); }
   }catch(_){}
   ensurePersist();
+  renderSync();
+  /* Pull anything the other device did while this one was shut. */
+  syncNow(false);
+  document.getElementById("syncconnect").onclick = connectSync;
+  document.getElementById("syncgo").onclick = () => syncNow(true);
+  document.getElementById("syncoff").onclick = disconnectSync;
+  window.addEventListener("online", () => syncNow(false));
+  document.addEventListener("visibilitychange", () => { if(!document.hidden) syncNow(false); });
   if("serviceWorker" in navigator && location.protocol.startsWith("http")){
     try{
       const reg = await navigator.serviceWorker.register("sw.js");
