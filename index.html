@@ -148,6 +148,79 @@ dl.keys dd{margin:0;color:var(--ink-2)}
   .btn{min-height:38px}
   .btn.sm{min-height:32px}
 }
+
+/* pin placement bar — sits above the GPS bar, clear of the home indicator */
+#placebar{
+  position:absolute; left:50%; transform:translateX(-50%); z-index:8;
+  bottom:calc(var(--gpsbar-h, 56px) + 10px + env(safe-area-inset-bottom,0px));
+  background:var(--panel); box-shadow:var(--shadow); border:1px solid var(--line);
+  border-radius:10px; padding:.5rem .6rem; display:grid; gap:.35rem;
+  min-width:min(19rem,92vw); text-align:center;
+}
+#placebar .pbwhat{font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; opacity:.75}
+#placebar .pbcoord{font-family:'IBM Plex Mono',monospace; font-size:.74rem; opacity:.85; word-break:break-word}
+#placebar .pbrow{display:grid; grid-template-columns:1fr 1.3fr; gap:.4rem}
+
+/* ---------- mobile bottom sheet ----------
+   The old panel covered the map, which is the one thing you cannot spare in the
+   woods. On a phone the rail becomes a drag-up sheet with three stops; the map
+   stays visible above it at every one. */
+#sheetgrab,#sheetprimary{display:none}
+#sheetscroll{display:contents}
+@media (max-width:760px){
+  .rail{
+    position:absolute; left:0; right:0; bottom:0; top:auto; width:auto;
+    height:var(--sheet-h,108px); max-height:none; gap:0; overflow:hidden;
+    background:var(--panel); border-top:1px solid var(--line);
+    border-radius:13px 13px 0 0; box-shadow:0 -6px 26px rgba(0,0,0,.34);
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    transition:height .2s ease; touch-action:none;
+  }
+  .rail[data-dragging="1"]{transition:none}
+  #sheetgrab{
+    display:flex; align-items:center; justify-content:center;
+    height:22px; flex:none; cursor:grab; touch-action:none;
+  }
+  #sheetgrab span{width:38px;height:4px;border-radius:999px;background:var(--line)}
+  #sheetgrab:focus-visible{outline:2px solid var(--blaze);outline-offset:-2px}
+  #sheetprimary{
+    display:grid; grid-template-columns:repeat(4,1fr); gap:5px;
+    padding:0 8px 8px; flex:none;
+  }
+  #sheetprimary .btn{min-height:42px;font-size:.74rem;padding:.2rem .15rem}
+  #sheetscroll{
+    display:flex; flex-direction:column; gap:6px;
+    overflow:auto; -webkit-overflow-scrolling:touch;
+    padding:0 8px 10px; flex:1 1 auto; min-height:0;
+    touch-action:pan-y;
+  }
+  #gpsbar{display:none}               /* its four actions live in the sheet now */
+  #insp{
+    position:static; width:auto; max-height:none; right:auto; bottom:auto;
+    order:-1;                          /* a live selection sits above the tools */
+  }
+  #placebar{bottom:calc(var(--sheet-h,108px) + 10px)}
+  #toast{bottom:calc(var(--sheet-h,108px) + 12px)}
+  #railshow{display:none}
+}
+#advanced{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
+#advanced>summary{
+  font-family:var(--f-ui);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--ink-2);cursor:pointer;padding:.3rem 0;list-style:none;min-height:30px;
+  display:flex;align-items:center;gap:.3rem;
+}
+#advanced>summary::-webkit-details-marker{display:none}
+#advanced>summary::before{content:"\25B8";display:inline-block;transition:transform .15s}
+#advanced[open]>summary::before{transform:rotate(90deg)}
+#advanced .btn{min-height:44px}
+
+.sitrow{display:grid;gap:1px;padding:.3rem 0;border-top:1px solid var(--line);cursor:pointer;font-size:.76rem}
+.sitrow:first-of-type{border-top:0}
+.sitrow b{font-family:var(--f-ui);letter-spacing:.03em;font-size:.84rem}
+.sitrow span{color:var(--ink-2);font-size:.72rem}
+.sitrow .warn{color:var(--danger)}
+.stat.dim{opacity:.62;font-size:.68rem}
+.risk{border-left:3px solid var(--danger);padding:.3rem 0 .3rem .45rem;font-size:.75rem;color:var(--danger);margin:.2rem 0}
 </style>
 </head>
 <body>
@@ -161,18 +234,40 @@ dl.keys dd{margin:0;color:var(--ink-2)}
     <canvas id="map"></canvas>
 
     <div class="rail" id="rail">
+      <div id="sheetgrab" role="button" tabindex="0" aria-label="Resize the panel"><span></span></div>
+      <div id="sheetprimary">
+        <button class="btn" id="sp-locate">Where am I</button>
+        <button class="btn" id="sp-pin">Drop pin</button>
+        <button class="btn" id="sp-mark" disabled>Mark here</button>
+        <button class="btn" id="sp-brief">Briefing</button>
+      </div>
+      <div id="sheetscroll">
       <div class="card">
         <h2>Tool <button class="btn sm" id="railhide" title="Hide panel" style="padding:0 .3rem;min-height:0;line-height:1.1">&laquo;</button></h2>
         <div class="body">
           <div class="row g2" id="tools">
             <button class="btn" data-tool="pan" aria-pressed="true">Pan</button>
-            <button class="btn" data-tool="edit">Edit</button>
-            <button class="btn" data-tool="draw">Draw</button>
-            <button class="btn" data-tool="erase">Erase box</button>
-            <button class="btn" data-tool="mark" style="grid-column:1/-1">Drop pin</button>
+            <button class="btn" data-tool="mark">Drop pin</button>
           </div>
+          <details id="advanced">
+            <summary>Advanced &mdash; trail editing</summary>
+            <div class="row g2" id="tools2">
+              <button class="btn" data-tool="edit">Edit</button>
+              <button class="btn" data-tool="draw">Draw</button>
+              <button class="btn" data-tool="erase" style="grid-column:1/-1">Erase box</button>
+              <button class="btn" id="walkbtn" style="grid-column:1/-1">Walk &amp; replace a stretch</button>
+            </div>
+          </details>
           <label class="field"><span>Pin type — used by Drop pin and Mark here</span><select id="pintype"></select></label>
           <div class="hint" id="toolhint"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 class="clickable" data-toggle="sitbody">Sit log <span class="c" id="sitcount">&mdash;</span></h2>
+        <div class="body" id="sitbody"></div>
+        <div class="body" style="padding-top:0">
+          <button class="btn go" id="sitbtn">Start sit</button>
         </div>
       </div>
 
@@ -192,7 +287,6 @@ dl.keys dd{margin:0;color:var(--ink-2)}
         <h2>Layers</h2>
         <div class="body">
           <label class="chk"><input type="checkbox" id="L-aerial" checked><span class="swatch" style="background:#5d7a4a"></span>Aerial</label>
-          <label class="chk"><input type="checkbox" id="L-hill"><span class="swatch" style="background:#8a8a8a"></span>Hillshade</label>
           <label class="chk"><input type="checkbox" id="L-cont" checked><span class="swatch" style="background:var(--clay)"></span>Contours</label>
           <label class="chk"><input type="checkbox" id="L-parcel" checked><span class="swatch" style="background:#e8c53a"></span>Property line</label>
           <label class="chk"><input type="checkbox" id="L-trail" checked><span class="swatch" style="background:var(--blaze)"></span>Trails</label>
@@ -239,6 +333,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
           <input type="file" id="filein" accept=".gpx,.geojson,.json,.xml" multiple hidden>
         </div>
       </div>
+      </div>
     </div>
 
     <button class="btn sm" id="railshow" hidden style="position:absolute;top:8px;left:8px;z-index:7;background:var(--panel);box-shadow:var(--shadow)">&raquo; Tools</button>
@@ -246,6 +341,15 @@ dl.keys dd{margin:0;color:var(--ink-2)}
     <div class="card" id="insp" hidden>
       <h2 id="insp-title">Selection</h2>
       <div class="body" id="insp-body"></div>
+    </div>
+
+    <div id="placebar" hidden>
+      <div class="pbwhat">Placing <b id="placewhat">Stand</b></div>
+      <div class="pbcoord" id="placecoord">&mdash;</div>
+      <div class="pbrow">
+        <button class="btn sm" id="placecancel">Cancel</button>
+        <button class="btn sm go" id="placego">Place here</button>
+      </div>
     </div>
 
     <div id="gpsbar">
@@ -303,6 +407,16 @@ dl.keys dd{margin:0;color:var(--ink-2)}
     <button class="btn sm" data-close>Close</button>
   </div>
 </div></dialog>
+
+<dialog id="walkdlg"><form method="dialog"><div class="body">
+  <h2>Replace that stretch?</h2>
+  <p class="hint" id="walkstat" style="margin:.2rem 0 .7rem;line-height:1.5"></p>
+  <p class="hint" style="margin:0 0 .7rem">A walked track carries far more points than a drawn line. This has already been thinned; the original stays on the undo stack either way.</p>
+  <div class="row" style="justify-content:flex-end">
+    <button class="btn sm" value="cancel">Keep the old line</button>
+    <button class="btn sm go" value="ok">Replace it</button>
+  </div>
+</div></form></dialog>
 
 <dialog id="keysdlg"><div class="body">
   <h2>Editing</h2>

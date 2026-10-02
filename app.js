@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 17;
+const BUILD = 18;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -39,35 +39,44 @@ const KINDS = {
   atv:   {label:"ATV / buggy",   dash:[10,4],  w:3.0, col:null},
   foot:  {label:"Foot path",     dash:[3,4],   w:2.2, col:null},
   creek: {label:"Creek / drain", dash:[8,5],   w:2.4, col:"#3f9fc4"},
-  edge:  {label:"Field edge",    dash:[2,6],   w:2.0, col:"#d9c23a"}
+  edge:  {label:"Field edge",    dash:[2,6],   w:2.0, col:"#d9c23a"},
+  route: {label:"Access route",   dash:[1,5],   w:2.8, col:"#b06bd6"}
 };
+/* Pin colours are FIXED, never theme-dependent: they sit on aerial photography,
+   and the aerial does not get darker when the phone switches to dark mode. */
 const PINS = {
-  stand:  {label:"Stand / blind",  color:"#d9541a", glyph:"stand"},
-  sight:  {label:"Deer sighting",  color:"#e8c53a", glyph:"deer"},
-  cam:    {label:"Trail camera",   color:"#b0409a", glyph:"cam"},
-  camdeer:{label:"Deer on camera", color:"#e0902a", glyph:"deer"},
-  scrape: {label:"Scrape",         color:"#8a5a2a", glyph:"ring"},
-  rub:    {label:"Rub",            color:"#c98a3a", glyph:"dot"},
-  drop:   {label:"Droppings",      color:"#6b5a3a", glyph:"dot"},
-  urine:  {label:"Urine / sign",   color:"#a8a03a", glyph:"dot"},
-  track:  {label:"Tracks",         color:"#7d8a94", glyph:"dot"},
-  bed:    {label:"Bedding",        color:"#7a5cc4", glyph:"bed"},
-  food:   {label:"Food plot",      color:"#5f9e3f", glyph:"square"},
-  feeder: {label:"Feeder",         color:"#4a8f2f", glyph:"square"},
-  water:  {label:"Water",          color:"#2f8fb0", glyph:"drop"},
-  note:   {label:"Note",           color:"#8c8c8c", glyph:"dot"}
+  stand:  {label:"Stand",          color:"#E2672A", glyph:"stand"},
+  blind:  {label:"Blind",          color:"#E2672A", glyph:"blind"},
+  cam:    {label:"Trail camera",   color:"#B98B4F", glyph:"cam"},
+  camdeer:{label:"Deer on camera", color:"#B98B4F", glyph:"oncam"},
+  track:  {label:"Tracks",         color:"#6C8A58", glyph:"track"},
+  scrape: {label:"Scrape",         color:"#6C8A58", glyph:"scrape"},
+  rub:    {label:"Rub",            color:"#6C8A58", glyph:"rub"},
+  drop:   {label:"Droppings",      color:"#6C8A58", glyph:"drop"},
+  urine:  {label:"Urine / sign",   color:"#6C8A58", glyph:"urine"},
+  bed:    {label:"Bedding",        color:"#6C8A58", glyph:"bed"},
+  feeder: {label:"Feeder",         color:"#C9A33A", glyph:"feeder"},
+  food:   {label:"Food plot",      color:"#C9A33A", glyph:"food"},
+  water:  {label:"Water",          color:"#5A8C9E", glyph:"water"},
+  sight:  {label:"Deer sighting",  color:"#90A379", glyph:"sight"},
+  kill:   {label:"Kill",           color:"#AD4531", glyph:"kill"},
+  move:   {label:"Movement",       color:"#E2672A", glyph:"move"},
+  terrain:{label:"Terrain feature",color:"#7FA8B5", glyph:"terrain"},
+  note:   {label:"Note",           color:"#8c8c8c", glyph:"note"}
 };
-const DIRECTIONAL = new Set(["sight","camdeer","track"]);
+const CHIP_BONE = "#E8E3D6", CHIP_INK = "#14170F";
+const DIRECTIONAL = new Set(["sight","camdeer","track","move"]);
 const WINDS = ["N","NE","E","SE","S","SW","W","NW"];
 const NAME_IDEAS = ["Main road","Camp road","Ridge road","Bottom road","Food plot road",
   "Creek crossing","Power line","Property line walk","North loop","South loop","Bedding edge"];
 
 /* ---------- state ---------- */
 let D = null;                       // the loaded map pack
-let trails = [], pins = [];
+let trails = [], pins = [], sits = [];
+let sitOpen = null;          // the sit in progress, if any
 let selT = new Set(), primary = null, selPin = null, anchors = [];
 let tool = "pan", editMode = "move", arrowPushed = false;
-let layers = {aerial:true, hill:false, cont:true, parcel:true, trail:true, labels:true, pins:true};
+let layers = {aerial:true, cont:true, parcel:true, trail:true, labels:true, pins:true};
 let nudge = {dx:0, dy:0, rot:0, scl:1};
 let draft = null, eraseBox = null, pending = null;
 let undoStack = [], redoStack = [];
@@ -78,7 +87,7 @@ const view = {k:1, tx:0, ty:0};
 let W = 0, H = 0, DPR = 1;
 const cv = document.getElementById("map");
 const ctx = cv.getContext("2d");
-let aerialImg = null, hillImg = null;
+let aerialImg = null;
 
 /* GPS */
 let gpsOn = false, watchId = null, fix = null, recording = null, averaging = null;
@@ -140,6 +149,15 @@ function rdp(pts, eps){
   if(dmax > eps) return rdp(pts.slice(0, idx+1), eps).slice(0,-1).concat(rdp(pts.slice(idx), eps));
   return [pts[0], pts[pts.length-1]];
 }
+/* distances: stored metric, shown in yards. Yards under half a mile, miles above. */
+const M2YD = 1.09361;
+function fmtDist(m){
+  const yd = m * M2YD;
+  if(yd < 880) return Math.round(yd) + " yd";
+  return (yd/1760).toFixed(2) + " mi";
+}
+const fmtAcc = m => "\u00b1" + Math.round(m * M2YD) + " yd";
+
 const getT = id => trails.find(t => t.id === id);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
@@ -241,21 +259,39 @@ function draw(){
   ctx.imageSmoothingQuality = "high";
   const dx = sx(0), dy = sy(0), dw = D.w*view.k, dh = D.h*view.k;
   if(layers.aerial && aerialImg && aerialImg.naturalWidth) ctx.drawImage(aerialImg, dx, dy, dw, dh);
-  if(layers.hill && hillImg && hillImg.naturalWidth){
-    ctx.globalAlpha = .55; ctx.globalCompositeOperation = "multiply";
-    ctx.drawImage(hillImg, dx, dy, dw, dh);
-    ctx.globalCompositeOperation = "source-over"; ctx.globalAlpha = 1;
-  }
   if(layers.cont && D.contours){
-    const clay = css("--clay");
-    for(const c of D.contours){
+    /* Over imagery a contour needs a dark casing under a light core, or it vanishes
+       on bright sand and on dark timber alike. With the aerial off there is nothing
+       to fight, so plain ink reads better and a casing just looks like a mistake. */
+    const overImagery = layers.aerial && aerialImg && aerialImg.naturalWidth;
+    const trace = c => {
       ctx.beginPath();
       for(let i = 0; i < c.p.length; i++){
         const X = sx(c.p[i][0]), Y = sy(c.p[i][1]);
         i ? ctx.lineTo(X,Y) : ctx.moveTo(X,Y);
       }
-      ctx.closePath(); ctx.strokeStyle = clay;
-      ctx.globalAlpha = c.index ? .95 : .6; ctx.lineWidth = c.index ? 1.6 : .9; ctx.stroke();
+      ctx.closePath();
+    };
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    if(overImagery){
+      // pass 1: every casing first, so no line's halo covers its neighbour's core
+      ctx.strokeStyle = "rgba(10,12,8,.72)";
+      for(const c of D.contours){
+        trace(c);
+        ctx.lineWidth = (c.index ? 2.0 : 1.2) + 2.0;
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "#f2ead8";
+      for(const c of D.contours){ trace(c); ctx.lineWidth = c.index ? 2.0 : 1.2; ctx.stroke(); }
+    }else{
+      const clay = css("--clay");
+      ctx.strokeStyle = clay;
+      for(const c of D.contours){
+        trace(c);
+        ctx.globalAlpha = c.index ? 1 : .75;
+        ctx.lineWidth = c.index ? 2.0 : 1.1;
+        ctx.stroke();
+      }
     }
     ctx.globalAlpha = 1;
     if(view.k > .55){
@@ -266,9 +302,12 @@ function draw(){
         const m = c.p[Math.floor(c.p.length/2)], X = sx(m[0]), Y = sy(m[1]);
         if(X<0||X>W||Y<0||Y>H) continue;
         const txt = c.ft + "'", wd = ctx.measureText(txt).width + 5;
-        ctx.fillStyle = css("--ground"); ctx.globalAlpha = .8;
+        ctx.fillStyle = overImagery ? "rgba(10,12,8,.8)" : css("--ground");
+        ctx.globalAlpha = overImagery ? 1 : .8;
         ctx.fillRect(X-wd/2, Y-7, wd, 13);
-        ctx.globalAlpha = 1; ctx.fillStyle = clay; ctx.fillText(txt, X, Y);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = overImagery ? "#f2ead8" : css("--clay");
+        ctx.fillText(txt, X, Y);
       }
     }
   }
@@ -370,6 +409,7 @@ function draw(){
   }
   if(layers.pins) for(const p of pins) drawPin(p);
   if(fix) drawFix();
+  if(tool === "mark"){ drawCrosshair(); syncPlacing(); }
   if(eraseBox){
     const {x0,y0,x1,y1} = eraseBox;
     ctx.save(); ctx.setLineDash([6,4]); ctx.strokeStyle = "#ff4d4d"; ctx.lineWidth = 1.6;
@@ -379,10 +419,21 @@ function draw(){
   updateScale();
 }
 
+function roundRect(x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x,   y+h, r);
+  ctx.arcTo(x,   y+h, x,   y,   r);
+  ctx.arcTo(x,   y,   x+w, y,   r);
+  ctx.closePath();
+}
 function drawPin(p){
   const X = sx(p.x), Y = sy(p.y);
-  if(X < -44 || X > W+44 || Y < -44 || Y > H+44) return;
-  const spec = PINS[p.t] || PINS.note, on = selPin === p.id, r = on ? 9 : 7;
+  if(X < -48 || X > W+48 || Y < -48 || Y > H+48) return;
+  const spec = PINS[p.t] || PINS.note, on = selPin === p.id;
+  const S = on ? 27 : 22;                       // 22 px is the floor: below it the rack goes
+
   if(DIRECTIONAL.has(p.t) && typeof p.dir === "number"){
     const a = (p.dir-90)*Math.PI/180, L = 34;
     const hx = X+Math.cos(a)*L, hy = Y+Math.sin(a)*L;
@@ -395,22 +446,41 @@ function drawPin(p){
     ctx.closePath(); ctx.fillStyle = spec.color; ctx.fill();
     ctx.strokeStyle = "rgba(0,0,0,.45)"; ctx.lineWidth = 1; ctx.stroke();
   }
-  ctx.beginPath();
-  if(spec.glyph === "square") ctx.rect(X-r, Y-r, r*2, r*2);
-  else if(spec.glyph === "stand"){ctx.moveTo(X,Y-r-2); ctx.lineTo(X+r,Y+r); ctx.lineTo(X-r,Y+r); ctx.closePath();}
-  else if(spec.glyph === "drop"){ctx.moveTo(X,Y-r-2); ctx.bezierCurveTo(X+r,Y-r,X+r,Y+r,X,Y+r); ctx.bezierCurveTo(X-r,Y+r,X-r,Y-r,X,Y-r-2);}
-  else ctx.arc(X,Y,r,0,7);
-  ctx.fillStyle = spec.color; ctx.fill();
-  ctx.lineWidth = on ? 3 : 2; ctx.strokeStyle = on ? "#fff" : "rgba(0,0,0,.6)"; ctx.stroke();
-  if(spec.glyph === "ring"){ctx.beginPath(); ctx.arc(X,Y,r-3.5,0,7); ctx.strokeStyle = "rgba(0,0,0,.6)"; ctx.lineWidth = 2; ctx.stroke();}
-  if(spec.glyph === "cam"){ctx.beginPath(); ctx.arc(X,Y,2.4,0,7); ctx.fillStyle = "#fff"; ctx.fill();}
-  if(spec.glyph === "bed"){ctx.beginPath(); ctx.moveTo(X-4,Y+1); ctx.lineTo(X+4,Y+1); ctx.strokeStyle = "#fff"; ctx.lineWidth = 2; ctx.stroke();}
+
+  const x0 = X - S/2, y0 = Y - S/2;
+  ctx.save();
+  ctx.shadowColor = "rgba(0,0,0,.5)"; ctx.shadowBlur = 3; ctx.shadowOffsetY = 1;
+  roundRect(x0, y0, S, S, S*.28);
+  ctx.fillStyle = CHIP_BONE; ctx.fill();
+  ctx.restore();
+  roundRect(x0, y0, S, S, S*.28);
+  ctx.lineWidth = on ? 3 : 2.2; ctx.strokeStyle = on ? "#fff" : spec.color; ctx.stroke();
+
+  let g = GLYPH[spec.glyph] || GLYPH.note;
+  ctx.save(); ctx.translate(x0, y0);
+  paintGlyph(g, S, CHIP_INK);
+  // a buck carries the rack; a doe does not, and the count rides on the badge
+  if(p.t === "kill" && p.sex !== "doe")
+    paintGlyph({s:RACK, sw:1.25}, S, CHIP_INK);
+  ctx.restore();
+
+  if(p.t === "kill" && p.sex !== "doe" && p.points){
+    const bs = Math.max(S*.46, 11), bx = X + S/2 - bs*.36, by = Y + S/2 - bs*.36;
+    ctx.beginPath(); ctx.arc(bx, by, bs/2, 0, 7);
+    ctx.fillStyle = spec.color; ctx.fill();
+    ctx.lineWidth = Math.max(1.4, S*.075); ctx.strokeStyle = css("--panel") || "#1b2016"; ctx.stroke();
+    ctx.fillStyle = CHIP_BONE;
+    ctx.font = "700 " + Math.round(bs*.66) + "px 'Barlow Condensed',sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(String(p.points), bx, by + bs*.04);
+  }
+
   if(p.name && view.k > .5){
     ctx.font = "600 11px 'Barlow Condensed',sans-serif";
     ctx.textAlign = "left"; ctx.textBaseline = "middle";
     const tw = ctx.measureText(p.name).width;
-    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(X+r+3, Y-7, tw+6, 14);
-    ctx.fillStyle = "#fff"; ctx.fillText(p.name, X+r+6, Y);
+    ctx.fillStyle = "rgba(0,0,0,.6)"; ctx.fillRect(X+S/2+3, Y-7, tw+6, 14);
+    ctx.fillStyle = "#fff"; ctx.fillText(p.name, X+S/2+6, Y);
   }
 }
 function drawFix(){
@@ -425,12 +495,134 @@ function drawFix(){
   ctx.fillStyle = "#1e90ff"; ctx.fill();
   ctx.strokeStyle = "#fff"; ctx.lineWidth = 2.5; ctx.stroke();
 }
+function drawCrosshair(){
+  /* Locked at screen centre: you pan the map under it instead of stabbing at the
+     glass, which is the only way to be accurate one-handed in the woods. Same
+     casing trick as the contours so it reads over sand and over timber. */
+  const X = Math.round(W/2), Y = Math.round(H/2), R1 = 16, GAP = 5;
+  const arm = (dx, dy) => {
+    ctx.beginPath();
+    ctx.moveTo(X+dx*GAP, Y+dy*GAP); ctx.lineTo(X+dx*R1, Y+dy*R1);
+  };
+  for(const pass of [{c:"rgba(10,12,8,.75)", w:5}, {c:"#f2ead8", w:1.8}]){
+    ctx.strokeStyle = pass.c; ctx.lineWidth = pass.w; ctx.lineCap = "round";
+    arm(1,0); ctx.stroke(); arm(-1,0); ctx.stroke();
+    arm(0,1); ctx.stroke(); arm(0,-1); ctx.stroke();
+    ctx.beginPath(); ctx.arc(X, Y, R1-4.5, 0, 7); ctx.stroke();
+  }
+  ctx.beginPath(); ctx.arc(X, Y, 1.4, 0, 7);
+  ctx.fillStyle = "#E2672A"; ctx.fill();
+}
 function updateScale(){
-  const targets = [10,20,25,50,100,200,250,500,1000];
-  let best = targets[0];
-  for(const t of targets) if(t / MPP() * view.k <= 110) best = t;
-  document.getElementById("scalerule").style.width = (best / MPP() * view.k).toFixed(0)+"px";
-  document.getElementById("scaletext").textContent = best >= 1000 ? (best/1000)+" km" : best+" m";
+  /* round YARD steps, not converted metres: a bar labelled "109 yd" is worse than one labelled "100 yd" */
+  const yards = [10,25,50,100,200,300,440,880,1760,3520];
+  const pxPerYd = () => view.k / (MPP() * M2YD);
+  let best = yards[0];
+  for(const y of yards) if(y * pxPerYd() <= 110) best = y;
+  document.getElementById("scalerule").style.width = (best * pxPerYd()).toFixed(0)+"px";
+  document.getElementById("scaletext").textContent =
+    best >= 880 ? (best/1760 % 1 ? (best/1760).toFixed(2) : best/1760) + " mi" : best + " yd";
+}
+
+
+/* ---------- pin glyphs ----------
+   Set D, the bone chip: an ink glyph on a bone rounded square with a kind-coloured
+   border. Geometry is on a 24x24 grid, drawn through Path2D with the same SVG path
+   data the icon sheet was designed with, so the map and the sheet never drift apart.
+   `sw` overrides the stroke width: filled shapes need a hair stroke or they blob and
+   fine detail (the hoof cleft, the skull sockets) closes up.                        */
+const HOOF_L = "M11.1 3.4C9.3 5.3 6.2 8.7 5.1 12.1c-1 3.2.7 5.6 3.2 5.6 1.9 0 2.9-1 2.95-2.8.05-3.8.05-8.2-.15-11.5z";
+const HOOF_R = "M12.9 3.4c1.8 1.9 4.9 5.3 6 8.7 1 3.2-.7 5.6-3.2 5.6-1.9 0-2.9-1-2.95-2.8-.05-3.8-.05-8.2.15-11.5z";
+const hoofAt = (tx, ty, k) => ({f:[HOOF_L, HOOF_R], sw:.5, tf:[tx, ty, k]});
+
+const GLYPH = {
+  stand:  {s:["M8.6 21.2 9.9 4","M15.4 21.2 14.1 4","M9.55 7.6h4.9","M9.1 13h5.8","M8.75 18.4h6.5"]},
+  blind:  {s:["M6.2 7.8h11.6v6.4H6.2z","M4.2 7.8 12 3.4l7.8 4.4","M9 10.9h6",
+              "M7.8 14.2 6 21.6M16.2 14.2l1.8 7.4"]},
+  cam:    {s:["M5.2 8h13.6v11.4H5.2z","M8.4 8V5.2h7.2V8","M8.4 11h-1.4"],
+           c:[[12,13.7,3.2]]},
+  oncam:  {s:["M4.4 8.8V4.4h4.4M19.6 8.8V4.4h-4.4M4.4 15.2v4.4h4.4M19.6 15.2v4.4h-4.4"],
+           g:[hoofAt(12,12,.5)]},
+  track:  {f:[HOOF_L,HOOF_R], sw:.5,
+           e:[[7.8,20.9,1.45,2.05,20],[16.2,20.9,1.45,2.05,-20]]},
+  scrape: {g:[hoofAt(12,9.2,.62)],
+           s:["M7.2 17.6 9.5 19.4M10.8 16.8l2.5 1.8M14.8 17.8l2.2 1.6M8.9 21l2.3 1.4M13.3 20.8l2.3 1.4"]},
+  rub:    {s:["M10.3 3.2c-1 5.7-1.4 11.7-1.3 18.2h6c.1-6.5-.3-12.5-1.3-18.2z","M6.4 21.4h11.2"],
+           f:["M11.9 8.4c-1.3 1.5-1.5 5.8-.4 8 1-2.4 1.1-5.6.4-8z"], sw:.5},
+  drop:   {g:[hoofAt(12,9,.6)], sw:.5,
+           e:[[7.9,19.4,1.6,1.15,-20],[12.1,21.6,1.6,1.15,8],[16.1,19.2,1.6,1.15,22]]},
+  urine:  {g:[hoofAt(12,8.8,.6)], sw:.5,
+           f:["M12 16.2c-1.1 1.6-1.5 2.7-.9 3.5.5.6 1.3.6 1.8 0 .6-.8.2-1.9-.9-3.5z"]},
+  bed:    {s:["M7.2 13c2-1.4 4.8-1.4 6.8 0M9 16.4c1.8-1.2 4.2-1.2 6 0"],
+           eo:[[12,13.8,7.8,5,0]]},
+  feeder: {s:["M7.9 3.8h8.2v8.4H7.9z","M7.9 12.2 12 17.4l4.1-5.2","M10 18.6 7.6 22.2M14 18.6l2.4 3.6"]},
+  food:   {s:["M4.4 6.6h15.2v10.8H4.4z","M7.6 9.6v4.8M12 9.6v4.8M16.4 9.6v4.8"]},
+  water:  {s:["M3.6 8.6c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0","M3.6 14c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0",
+              "M3.6 19.4c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0"]},
+  sight:  {s:["M10.3 12.4h3.4","M6 11.4V7.7h4.3v3.7M18 11.4V7.7h-4.3v3.7"],
+           c:[[7.8,15.2,4.4],[16.2,15.2,4.4]]},
+  kill:   {s:["M12 5.4c-2.4 0-4.2 1.8-4.35 4.4-.15 2 .2 3.4 1.2 4.5.9 1 1.35 2.2 1.45 3.9l.15 2.2c.05.9.45 1.45 1.55 1.45s1.5-.55 1.55-1.45l.15-2.2c.1-1.7.55-2.9 1.45-3.9 1-1.1 1.35-2.5 1.2-4.5C16.2 7.2 14.4 5.4 12 5.4z"],
+           sw:1.25,
+           e:[[10,11.4,1.35,1.05,-25],[14,11.4,1.35,1.05,25]],
+           f:["M12 17.2c-.55 1.3-.7 2.6-.35 3.2.3.5.8.5 1.1 0 .35-.6.2-1.9-.35-3.2z"]},
+  note:   {s:["M12 4.4v12.4","M8.6 13.4 12 16.8l3.4-3.4"], c:[[12,20.4,1.1]]},
+  move:   {s:["M12 21.4V4.6","M7.2 9.4 12 4.4l4.8 5"]},
+  terrain:{s:["M2.8 16.4c3.4-4 6.2-4 9.2 0s5.8 4 9.2 0",
+              "M5.4 20.2c2.4-2.8 4.4-2.8 6.6 0s4.2 2.8 6.6 0",
+              "M12 11.6 9.2 7.2h5.6z"]}
+};
+/* one rack, drawn once — the point count rides on a badge where it stays readable */
+const RACK = ["M10.4 7.4C9 4.8 6.6 3.2 4 3 2.9 2.95 2.2 2.3 2.3 1.2",
+              "M13.6 7.4c1.4-2.6 3.8-4.2 6.4-4.4 1.1-.05 1.8-.7 1.7-1.8",
+              "M8.9 5.2 8.6 2.4","M15.1 5.2 15.4 2.4",
+              "M7 3.9 6.7 1.1","M17 3.9 17.3 1.1",
+              "M5.2 3.2 4.9 .9","M18.8 3.2 19.1 .9"];
+const PATHC = new Map();
+const pathOf = d => { let p = PATHC.get(d); if(!p){ p = new Path2D(d); PATHC.set(d, p); } return p; };
+
+function paintGlyph(spec, size, ink){
+  const k = size/24;
+  ctx.save(); ctx.scale(k, k);
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.strokeStyle = ink; ctx.fillStyle = ink;
+  const base = spec.sw || 1.7;
+  const run = (sp, tf) => {
+    ctx.save();
+    if(tf){ ctx.translate(tf[0], tf[1]); ctx.scale(tf[2], tf[2]); ctx.translate(-12, -12); }
+    ctx.lineWidth = sp.sw || base;
+    for(const d of sp.f || []){ const p = pathOf(d); ctx.fill(p); ctx.stroke(p); }
+    for(const d of sp.s || []) ctx.stroke(pathOf(d));
+    for(const c of sp.c || []){ ctx.beginPath(); ctx.arc(c[0], c[1], c[2], 0, 7); ctx.stroke(); }
+    for(const e of sp.e || []){           // filled: dewclaws, pellets, eye sockets
+      ctx.beginPath(); ctx.ellipse(e[0], e[1], e[2], e[3], (e[4]||0)*Math.PI/180, 0, 7);
+      ctx.fill(); ctx.stroke();
+    }
+    for(const e of sp.eo || []){          // outline: the bed hollow, lens barrels
+      ctx.beginPath(); ctx.ellipse(e[0], e[1], e[2], e[3], (e[4]||0)*Math.PI/180, 0, 7);
+      ctx.stroke();
+    }
+    ctx.restore();
+  };
+  run(spec, spec.tf);
+  for(const g of spec.g || []) run(g, g.tf);
+  ctx.restore();
+}
+
+function syncPlacing(){
+  const bar = document.getElementById("placebar");
+  if(!bar) return;
+  const on = tool === "mark";
+  bar.hidden = !on;
+  if(!on) return;
+  const w = atScreen(W/2, H/2), ll = worldToLL(w[0], w[1]);
+  let txt = fmtLL(ll[0], ll[1]);
+  if(fix){
+    const fw = llToWorld(fix.lon, fix.lat);
+    txt += "  ·  " + fmtDist(Math.hypot(w[0]-fw[0], w[1]-fw[1]) * MPP()) + " from you";
+  }
+  document.getElementById("placecoord").textContent = txt;
+  document.getElementById("placewhat").textContent =
+    (PINS[document.getElementById("pintype").value] || PINS.note).label;
 }
 
 /* ---------- hit tests ---------- */
@@ -479,18 +671,18 @@ function hitLooseEnd(px, py){
 }
 
 /* ---------- history ---------- */
-const snap = () => JSON.stringify({trails, pins});
+const snap = () => JSON.stringify({trails, pins, sits});
 function push(){ undoStack.push(snap()); if(undoStack.length > 60) undoStack.shift(); redoStack.length = 0; }
 function restore(s){
   const o = JSON.parse(s);
-  trails = o.trails; pins = o.pins;
+  trails = o.trails; pins = o.pins; if(o.sits) sits = o.sits;
   selT = new Set([...selT].filter(id => getT(id)));
   if(primary && !getT(primary)) primary = null;
   if(selPin && !pins.find(p => p.id === selPin)) selPin = null;
   anchors = [];
   after(null);
 }
-function after(msg){ saveState(); syncList(); renderInsp(); draw(); if(msg) toast(msg); }
+function after(msg){ saveState(); syncList(); renderInsp(); renderSits(); draw(); if(msg) toast(msg); }
 
 /* ---------- selection ---------- */
 function selectTrail(id, additive){
@@ -581,14 +773,14 @@ function opJoin(){
       if(!best || d < best.d) best = {d, o, te, oe};
     }
   }
-  if(!best || best.d > 60) return toast("No loose end within 60 m to join to.");
+  if(!best || best.d > 60) return toast("No loose end within 65 yd to join to.");
   push();
   const A = best.te ? t.p.slice() : t.p.slice().reverse();
   const B = best.oe ? best.o.p.slice().reverse() : best.o.p.slice();
   t.p = A.concat(B);
   trails = trails.filter(x => x !== best.o);
   selT = new Set([t.id]); primary = t.id; anchors = [];
-  after("Joined — gap was " + Math.round(best.d) + " m.");
+  after("Joined — gap was " + fmtDist(best.d) + ".");
 }
 function removePoint(t, i){
   if(!t || i < 0) return;
@@ -859,12 +1051,12 @@ const HINTS = {
 };
 function setTool(t, keepDraft){
   tool = t;
-  document.querySelectorAll("#tools .btn").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
+  document.querySelectorAll("#tools .btn, #tools2 .btn").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
   document.getElementById("toolhint").textContent = HINTS[t];
   if(t !== "edit") editMode = "move";
   cv.classList.toggle("cross", t === "draw" || t === "mark" || t === "erase" || (t === "edit" && editMode !== "move"));
   if(t !== "draw" && !keepDraft) draft = null;
-  renderInsp(); draw();
+  syncPlacing(); renderInsp(); draw();
 }
 
 /* ---------- pins ---------- */
@@ -923,7 +1115,7 @@ document.getElementById("markhere").onclick = () => {
   if(!needFix()) return;
   const p = dropPin(llToWorld(fix.lon, fix.lat), document.getElementById("pintype").value,
                     {acc:Math.round(fix.acc)});
-  toast("Dropped at ±" + Math.round(fix.acc) + " m. Fill in the details.");
+  toast("Dropped at " + fmtAcc(fix.acc) + ". Fill in the details.");
   centerOn(p.x, p.y);
 };
 document.getElementById("avgbtn").onclick = function(){
@@ -952,7 +1144,7 @@ function finishAverage(){
   const acc = good.reduce((a,f) => a+f.acc, 0)/good.length / Math.sqrt(good.length);
   const p = dropPin(llToWorld(lon, lat), document.getElementById("pintype").value,
                     {acc:Math.round(acc*10)/10, averaged:good.length});
-  toast("Averaged " + good.length + " fixes — about ±" + acc.toFixed(1) + " m.");
+  toast("Averaged " + good.length + " fixes — about " + fmtAcc(acc) + ".");
   centerOn(p.x, p.y);
 }
 document.getElementById("recbtn").onclick = function(){
@@ -967,12 +1159,13 @@ function stopRecording(){
   btn.setAttribute("aria-pressed", "false"); btn.textContent = "Record";
   const pts = recording ? recording.pts : [];
   recording = null;
-  if(pts.length < 3){ draw(); return toast("Too few fixes to keep."); }
+  if(pts.length < 3){ walkSpan = null; draw(); return toast("Too few fixes to keep."); }
+  if(walkSpan) return walkReplace(pts);
   push();
   const line = rdp(pts, 3 / MPP());
   const t = {id:newId("w"), p:line.map(unnudged), name:"", kind:"trail"};
   trails.push(t); selT = new Set([t.id]); primary = t.id;
-  after("Walked line saved — " + Math.round(lenOf(t.p)) + " m. Name it, or use it to replace an old line.");
+  after("Walked line saved — " + fmtDist(lenOf(t.p)) + ". Name it, or use it to replace an old line.");
 }
 function centerOn(x, y){
   view.tx = W/2 - x*view.k; view.ty = H/2 - y*view.k; draw();
@@ -981,6 +1174,7 @@ function centerOn(x, y){
 /* ---------- weather (National Weather Service, free, no key) ---------- */
 async function getWeather(){
   const cached = await DB.get("wx");
+  if(cached && cached.now) LASTWX = {deg:WINDDEG[cached.now.dir] ?? null, dir:cached.now.dir || ""};
   const fresh = cached && (Date.now() - cached.at < 45*60*1000);
   if(fresh) return cached;
   const c = D.center || worldToLL(D.w/2, D.h/2);
@@ -996,9 +1190,19 @@ async function getWeather(){
       t:p.startTime, temp:p.temperature, unit:p.temperatureUnit,
       wind:p.windSpeed, dir:p.windDirection, sky:p.shortForecast
     }));
-    const wx = {at:Date.now(), now:{temp:now.temperature, unit:now.temperatureUnit,
+    let press = null;
+    try{
+      const st = await fetch(pj.properties.observationStations);
+      const sj = await st.json();
+      const ob = await fetch(sj.features[0].id + "/observations/latest");
+      const oj = await ob.json();
+      const pa = oj.properties.barometricPressure;
+      if(pa && pa.value) press = +(pa.value/3386.39).toFixed(2);   // Pa -> inHg
+    }catch(_){}
+    const wx = {at:Date.now(), press, now:{temp:now.temperature, unit:now.temperatureUnit,
                 wind:now.windSpeed, dir:now.windDirection, sky:now.shortForecast}, next};
     await DB.set("wx", wx);
+    LASTWX = {deg:WINDDEG[wx.now.dir] ?? null, dir:wx.now.dir || ""};
     return wx;
   }catch(_){ return cached || null; }
 }
@@ -1019,11 +1223,31 @@ async function buildBriefing(){
   L.push("Moon: " + mn.name + ", " + Math.round(mn.illum*100) + "% lit, day " + mn.age.toFixed(1) + " of cycle");
   if(wx){
     const age = Math.round((Date.now()-wx.at)/60000);
+    const calm = p => (!p.dir || /^0\s*mph/.test(p.wind || "")) ? "calm" : p.dir + " " + p.wind;
     L.push("Weather (NWS, " + (age < 2 ? "just now" : age + " min old") + "): " +
-           wx.now.temp + "°" + wx.now.unit + ", wind " + wx.now.dir + " " + wx.now.wind + ", " + wx.now.sky);
-    const w6 = wx.next.slice(1, 7).map(p => new Date(p.t).getHours() + "h " + p.dir + " " + p.wind).join("; ");
-    L.push("Next 6 h wind: " + w6);
+           wx.now.temp + "°" + wx.now.unit + ", wind " + calm(wx.now) + ", " + wx.now.sky +
+           (wx.press ? ", pressure " + wx.press + " inHg" : ""));
+    /* only the hours you will actually be sitting: rows past dark are noise */
+    const endMs = (sun.sunset ? sun.sunset.getTime() : now.getTime()) + 30*60000;
+    const rows = wx.next.filter(p => {
+      const t = new Date(p.t).getTime();
+      return t >= now.getTime() - 36e5 && t <= endMs + 36e5;
+    }).slice(0, 8);
+    if(rows.length){
+      L.push("Through last light: " +
+        rows.map(p => new Date(p.t).getHours() + "h " + calm(p) + " " + p.temp + "°").join("; "));
+      const t0 = rows[0].temp, t1 = rows[rows.length-1].temp;
+      L.push("Temp trend over the sit: " + t0 + "° → " + t1 + "° (" +
+             (t1 - t0 >= 0 ? "+" : "") + (t1 - t0) + "°). " +
+             (t1 - t0 <= -6 ? "A falling temp like that is what moves them."
+                            : t1 - t0 >= 3 ? "Rising — expect them late."
+                                           : "Flat, which is the least helpful kind of evening."));
+    }
   } else L.push("Weather: unavailable offline — add it yourself if you have it.");
+  if(sun.sunrise && sun.sunset)
+    L.push("Legal light (AL: 30 min either side of the sun): " +
+           hhmm(new Date(sun.sunrise.getTime() - 30*60000)) + " to " +
+           hhmm(new Date(sun.sunset.getTime() + 30*60000)) + " — confirm against this year's regs.");
   L.push("");
   L.push("STANDS AND BLINDS");
   const stands = pins.filter(p => p.t === "stand");
@@ -1046,15 +1270,41 @@ async function buildBriefing(){
     if(p.sexage && p.sexage !== "unknown") bits.push(p.sexage);
     if(typeof p.dir === "number") bits.push("moving " + degToCompass(p.dir) + " (" + p.dir + "°)");
     bits.push("@ " + fmtLL(...worldToLL(p.x, p.y)));
-    if(p.acc) bits.push("±" + p.acc + "m");
+    if(p.acc) bits.push(fmtAcc(p.acc));
     if(p.note) bits.push("— " + p.note);
     L.push("  • " + bits.join(", "));
   }
   L.push("");
-  L.push("TRAILS (" + trails.length + " lines, " +
-         (trails.reduce((s,t) => s+lenOf(t.p), 0)/1609.34).toFixed(2) + " mi)");
-  for(const t of trails.filter(t => t.name))
-    L.push("  • " + t.name + " (" + (KINDS[t.kind] || KINDS.trail).label + ", " + Math.round(lenOf(t.p)) + " m)");
+  L.push("TRAILS AND LINES (" + trails.length + " lines, " +
+         fmtDist(trails.reduce((s,t) => s+lenOf(t.p), 0)) + " total)");
+  const ranked = trails.map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L);
+  for(const {t, L2} of ranked.slice(0, 14).map(o => ({t:o.t, L2:o.L})))
+    L.push("  • " + (t.name || "unnamed") + " (" + (KINDS[t.kind] || KINDS.trail).label +
+           ", " + fmtDist(L2) + ")" +
+           (t.kind === "route" && (t.stands || []).length
+             ? "  [approach to " + t.stands.map(id => {
+                 const p = pins.find(x => x.id === id); return p ? (p.name || "a stand") : "?";
+               }).join(", ") + "]" : ""));
+  if(ranked.length > 14) L.push("  • …and " + (ranked.length-14) + " shorter lines");
+  L.push("");
+  L.push("SIT LOG (what each stand has actually produced this season)");
+  const season = inSeason(sits);
+  if(!season.length) L.push("  (no sits logged yet — so stand rankings below are guesswork)");
+  const byStand = [...new Set(season.map(s => s.stand).filter(Boolean))]
+    .map(id => ({id, p:pins.find(x => x.id === id), st:standStats(id)}))
+    .sort((a,b) => b.st.per - a.st.per);
+  for(const {p, st} of byStand)
+    L.push("  • " + (p ? (p.name || "unnamed stand") : "deleted stand") + ": " +
+           st.sits + (st.sits === 1 ? " sit" : " sits") + ", " + st.deer + " deer, " +
+           st.per.toFixed(1) + " per sit, last sat " + st.days + "d ago" +
+           (st.hot ? "  [PRESSURED — sat " + st.sits + "x recently]" : ""));
+  for(const s of season.slice(0, 10))
+    L.push("    - " + s.date + " " + (s.standName || "?") + " " + (s.in||"") + "-" + (s.out||"") +
+           ", " + (s.seen||0) + " deer" + (s.wind ? ", wind " + s.wind + " " + s.windSpeed : "") +
+           (s.temp !== null && s.temp !== undefined ? ", " + s.temp + "°" : "") +
+           (s.note ? " — " + s.note : ""));
+  if(sitOpen) L.push("  (a sit is open right now at " + (sitOpen.standName || "an unset stand") + ")");
+
   L.push("");
   L.push("Question: given the wind, light and what I've been seeing, where should I sit " +
          "this evening and in the morning, and how should I get in without blowing it out?");
@@ -1143,6 +1393,8 @@ document.getElementById("filein").onchange = async e => {
         trails = (b.trails || []).map((t,i) => ({id:t.id || ("b"+i), p:t.p,
                   name:t.name || "", kind:KINDS[t.kind] ? t.kind : "trail"}));
         pins = b.pins || [];
+        sits = b.sits || [];
+        sitOpen = b.sitOpen || null;
         nudge = b.nudge || {dx:0, dy:0, rot:0, scl:1};
         selT.clear(); primary = null; selPin = null; anchors = [];
         nudgeStat(); after("Backup restored \u2014 " + trails.length + " lines, " + pins.length + " pins.");
@@ -1167,7 +1419,7 @@ document.getElementById("filein").onchange = async e => {
   pending = {lines, pts};
   const total = lines.reduce((s,l) => s+lenOf(l), 0);
   const bits = [lines.length + " track" + (lines.length === 1 ? "" : "s") +
-                (total ? " · " + Math.round(total) + " m (" + (total/1609.34).toFixed(2) + " mi)" : "")];
+                (total ? " · " + fmtDist(total) : "")];
   if(pts.length) bits.push(pts.length + " waypoint" + (pts.length === 1 ? "" : "s"));
   const named = lines.filter(l => l.meta && l.meta.name).length;
   const typed = pts.filter(p => p.props && PINS[p.props.kind]).length;
@@ -1239,7 +1491,7 @@ function showExport(title, hint, text, filename){
 }
 function backupBlob(){
   return {format:"huntmap-state/1", savedAt:new Date().toISOString(),
-          map:(D && D.name) || "", trails, pins, nudge};
+          map:(D && D.name) || "", trails, pins, sits, sitOpen, nudge};
 }
 document.getElementById("backupbtn").onclick = () =>
   showExport("Backup", "Everything exactly as it is here. Send it to your other device and use Import to restore it.",
@@ -1286,6 +1538,7 @@ function el(tag, attrs, kids){
 const field = (label, input) => el("label", {class:"field"}, [el("span", {}, [label]), input]);
 
 function renderInsp(){
+  if((selPin || primary || selT.size) && typeof SHEET !== "undefined") SHEET.atLeast(1);
   const box = document.getElementById("insp"), body = document.getElementById("insp-body");
   body.textContent = "";
   if(selPin) return renderPin(box, body);
@@ -1295,7 +1548,7 @@ function renderInsp(){
     document.getElementById("insp-title").textContent = selT.size + " lines picked";
     const tot = [...selT].reduce((s,id) => s + lenOf(getT(id).p), 0);
     body.append(
-      el("div", {class:"stat"}, [Math.round(tot) + " m · " + (tot/1609.34).toFixed(2) + " mi"]),
+      el("div", {class:"stat"}, [fmtDist(tot)]),
       el("div", {class:"row g2"}, [
         el("button", {class:"btn sm", onclick:() => opSimplify(false)}, ["Smooth"]),
         el("button", {class:"btn sm", onclick:() => opSimplify(true)}, ["Straighten"]),
@@ -1320,7 +1573,7 @@ function renderInsp(){
   body.append(
     field("Name", nameIn),
     field("What it is", kindSel),
-    el("div", {class:"stat"}, [Math.round(L) + " m · " + (L/1609.34).toFixed(2) + " mi · " + t.p.length + " points"]),
+    el("div", {class:"stat"}, [fmtDist(L) + " · " + t.p.length + " points"]),
     el("div", {class:"sep"}),
     el("div", {class:"grp"}, ["Points"]),
     el("div", {class:"row g2"}, [
@@ -1447,6 +1700,90 @@ function renderPin(box, body){
     }
     body.append(field("Huntable on these winds", grid));
   }
+
+  if(p.t === "stand" || p.t === "blind"){
+    const st = standStats(p.id);
+    body.append(el("div", {class:"stat"}, [
+      st.sits ? st.sits + (st.sits === 1 ? " sit" : " sits") + " this season \u00b7 " + st.deer +
+                " deer \u00b7 " + st.per.toFixed(1) + " per sit" +
+                (st.days !== null ? " \u00b7 last sat " + st.days + "d ago" : "")
+              : "No sits logged here yet."]));
+    if(st.hot) body.append(el("div", {class:"risk"},
+      ["Sat " + st.sits + " times and you were here " + st.days + " days ago. " +
+       "Deer pattern you faster than you pattern them \u2014 this one wants resting."]));
+    if(LASTWX && LASTWX.deg !== null){
+      const risk = approachRisk(p, LASTWX.deg);
+      if(risk) body.append(el("div", {class:"risk"}, [risk.text]));
+    }
+    const chk = el("input", {type:"date", value:p.lastCheck || ""});
+    chk.addEventListener("input", () => { p.lastCheck = chk.value; saveState(); });
+    body.append(field("Last inspected (ladders rot)", chk));
+
+    const linked = trails.filter(t => t.kind === "route" && (t.stands || []).includes(p.id));
+    const rrow = el("div", {class:"row"});
+    rrow.append(el("button", {class:"btn sm", onclick:() => linkRoute(p)},
+                   [linked.length ? "Link another route" : "Link an access route"]));
+    for(const r of linked){
+      const b = el("button", {class:"btn sm"}, [(r.name || "route") + " \u00d7"]);
+      b.onclick = () => { r.stands = (r.stands || []).filter(x => x !== p.id); after("Route unlinked."); };
+      rrow.append(b);
+    }
+    body.append(field("Access routes \u2014 the walk in", rrow));
+  }
+
+  if(p.t === "cam" || p.t === "camdeer"){
+    const card = el("input", {type:"date", value:p.lastCard || ""});
+    card.addEventListener("input", () => { p.lastCard = card.value; saveState(); });
+    const batt = el("input", {type:"date", value:p.lastBatt || ""});
+    batt.addEventListener("input", () => { p.lastBatt = batt.value; saveState(); });
+    body.append(field("Card pulled", card), field("Battery changed", batt));
+  }
+
+  if(p.t === "kill"){
+    const sex = el("select", {});
+    for(const v of ["buck","doe"]){
+      const o = el("option", {value:v}, [v]);
+      if(v === (p.sex || "buck")) o.selected = true;
+      sex.appendChild(o);
+    }
+    const pts = el("input", {type:"number", min:"0", max:"40", step:"1",
+                             value:p.points === undefined ? "" : String(p.points),
+                             placeholder:"any number"});
+    const ptsField = field("Points", pts);
+    const syncSex = () => {
+      p.sex = sex.value;
+      ptsField.hidden = p.sex === "doe";       // a doe carries no rack and no badge
+      saveState(); draw();
+    };
+    sex.addEventListener("change", syncSex);
+    pts.addEventListener("input", () => {
+      p.points = pts.value === "" ? undefined : Math.max(0, Number(pts.value) || 0);
+      saveState(); draw();
+    });
+    body.append(field("Sex", sex), ptsField); syncSex();
+
+    /* where it stood, where it ran, where you found it. Useful once for the
+       track; useful every year after for learning the exits. */
+    const mark = (key, label) => {
+      const has = Array.isArray(p[key]);
+      const b = el("button", {class:"btn sm"},
+                   [has ? label + " \u2713" : "Mark " + label.toLowerCase()]);
+      b.onclick = () => {
+        p[key] = fix ? llToWorld(fix.lon, fix.lat) : atScreen(W/2, H/2);
+        after(label + " marked" + (fix ? " at your GPS fix." : " at the crosshair."));
+      };
+      return b;
+    };
+    const row = el("div", {class:"row"}, [mark("shotFrom","Shot from"), mark("hitAt","Hit"), mark("foundAt","Found")]);
+    body.append(field("Shot and recovery", row));
+    if(Array.isArray(p.shotFrom) && Array.isArray(p.hitAt))
+      body.append(el("div", {class:"stat"}, ["Shot distance " +
+        fmtDist(Math.hypot(p.shotFrom[0]-p.hitAt[0], p.shotFrom[1]-p.hitAt[1]) * MPP())]));
+    if(Array.isArray(p.hitAt) && Array.isArray(p.foundAt))
+      body.append(el("div", {class:"stat"}, ["Ran " +
+        fmtDist(Math.hypot(p.hitAt[0]-p.foundAt[0], p.hitAt[1]-p.foundAt[1]) * MPP()) +
+        " to " + degToCompass(Math.atan2(p.foundAt[0]-p.hitAt[0], -(p.foundAt[1]-p.hitAt[1]))*180/Math.PI)]));
+  }
   const when = el("input", {type:"date", value:p.when || ""});
   when.addEventListener("input", () => { p.when = when.value; saveState(); });
   body.append(field("Date", when));
@@ -1455,9 +1792,236 @@ function renderPin(box, body){
   note.addEventListener("input", () => { p.note = note.value; saveState(); });
   body.append(field("Notes", note));
   const ll = worldToLL(p.x, p.y);
-  body.append(el("div", {class:"stat"}, [fmtLL(ll[0], ll[1]) + (p.acc ? "  ±" + p.acc + "m" : "") +
+  body.append(el("div", {class:"stat"}, [fmtLL(ll[0], ll[1]) + (p.acc ? "  " + fmtAcc(p.acc) : "") +
       (p.averaged ? "  (" + p.averaged + " fixes averaged)" : "")]),
     el("div", {class:"row"}, [el("button", {class:"btn sm danger", onclick:opDeleteSel}, ["Delete pin"])]));
+}
+
+
+/* ================= sit log =================
+   The thing that was missing. Pins record deer SEEN; without a record of sits
+   there is no denominator, and the blank sits are where the information is.
+   A sit with nothing seen has to cost one tap, or it never gets logged.        */
+let LASTWX = {deg:null, dir:""};     // most recent NWS wind, for the approach check
+const WINDDEG = {N:0, NNE:22, NE:45, ENE:68, E:90, ESE:113, SE:135, SSE:158,
+                 S:180, SSW:203, SW:225, WSW:248, W:270, WNW:293, NW:315, NNW:338};
+const SEASON_START = () => {            // Alabama season spans the new year
+  const n = new Date(), y = n.getMonth() >= 6 ? n.getFullYear() : n.getFullYear()-1;
+  return y + "-07-01";
+};
+const sitsFor = id => sits.filter(s => s.stand === id);
+const inSeason = a => a.filter(s => (s.date || "") >= SEASON_START());
+
+function standStats(id){
+  const all = inSeason(sitsFor(id));
+  const deer = all.reduce((n, s) => n + (s.seen || 0), 0);
+  const last = all.map(s => s.date).sort().pop();
+  const days = last ? Math.round((Date.now() - new Date(last+"T12:00").getTime())/86400000) : null;
+  return {sits:all.length, deer, last, days,
+          per: all.length ? deer/all.length : null,
+          hot: all.length >= 3 && days !== null && days <= 7};   // sat out
+}
+function nearestStand(w){
+  let best = null, bd = Infinity;
+  for(const p of pins) if(p.t === "stand" || p.t === "blind"){
+    const d = Math.hypot(p.x-w[0], p.y-w[1]);
+    if(d < bd){ bd = d; best = p; }
+  }
+  return best;
+}
+async function startSit(){
+  const w = fix ? llToWorld(fix.lon, fix.lat) : atScreen(W/2, H/2);
+  const st = nearestStand(w);
+  const wx = await getWeather().catch(() => null);
+  const now = new Date(), mn = moonInfo(now);
+  sitOpen = {
+    id:newId("s"), stand:st ? st.id : null, standName:st ? (st.name || "unnamed") : "",
+    date:now.toISOString().slice(0,10), in:hhmm(now), out:"",
+    wind:wx ? wx.now.dir : "", windSpeed:wx ? wx.now.wind : "",
+    temp:wx ? wx.now.temp : null, sky:wx ? wx.now.sky : "",
+    moon:Math.round(mn.illum*100), seen:0, note:""
+  };
+  saveState(); renderSits();
+  toast(st ? "Sit started at " + (st.name || "the nearest stand") + "."
+           : "Sit started. No stand nearby — pick one in the log.");
+}
+function endSit(){
+  if(!sitOpen) return;
+  sitOpen.out = hhmm(new Date());
+  sits.unshift(sitOpen);
+  const n = sitOpen.seen || 0;
+  sitOpen = null;
+  push(); saveState(); renderSits(); renderInsp();
+  toast("Sit logged" + (n ? " — " + n + " deer." : " — nothing seen. That counts."));
+}
+
+
+
+
+/* ================= walk-and-replace a span =================
+   Mark two points on a line, walk that stretch, and swap the walked track in.
+   A raw GPS walk arrives with hundreds of points against a hand-drawn line's
+   dozen, so it is simplified and the counts are shown BEFORE anything commits. */
+let walkSpan = null;         // {tid, i, j} armed before recording starts
+
+function armWalk(){
+  const sp = span();
+  if(!sp) return toast("Pick a line, then tap two points on it to mark the stretch.");
+  walkSpan = {tid:sp.t.id, i:sp.i, j:sp.j};
+  toast("Walk the stretch between those two points, then press Record again to stop.");
+  if(!gpsOn) document.getElementById("gpsbtn").click();
+  const rec = document.getElementById("recbtn");
+  if(rec.getAttribute("aria-pressed") !== "true") rec.click();
+}
+function orientToAnchors(track, a, b){
+  /* a track walked the other way round would fold the line back on itself */
+  const d0 = Math.hypot(track[0][0]-a[0], track[0][1]-a[1]) +
+             Math.hypot(track[track.length-1][0]-b[0], track[track.length-1][1]-b[1]);
+  const d1 = Math.hypot(track[0][0]-b[0], track[0][1]-b[1]) +
+             Math.hypot(track[track.length-1][0]-a[0], track[track.length-1][1]-a[1]);
+  return d1 < d0 ? track.slice().reverse() : track;
+}
+function walkReplace(rawPts){
+  const t = getT(walkSpan.tid);
+  const {i, j} = walkSpan;
+  walkSpan = null;
+  if(!t || j >= t.p.length) return toast("That line changed while you were walking — nothing replaced.");
+
+  const a = t.p[i], b = t.p[j];
+  const raw = rawPts.map(unnudged);
+  const eps = 3 / MPP();
+  const thin = rdp(raw, eps);
+  const span2 = orientToAnchors(thin, a, b);
+  // stitch to the anchors: GPS will not land exactly on them
+  const mid = span2.slice(1, -1);
+  const next = t.p.slice(0, i+1).concat(mid, t.p.slice(j));
+
+  const before = j - i + 1, after2 = mid.length + 2;
+  const dlg = document.getElementById("walkdlg");
+  document.getElementById("walkstat").innerHTML =
+    "<b>" + raw.length + "</b> fixes walked, thinned to <b>" + after2 + "</b> points.<br>" +
+    "Replacing <b>" + before + "</b> points covering " +
+    fmtDist(lenOf(t.p.slice(i, j+1))) + " with " + fmtDist(lenOf(span2)) + ".";
+  dlg.returnValue = "";
+  const commit = () => {
+    push();
+    t.p = next; anchors = [];
+    after("Span replaced from your walk — line is now " + fmtDist(lenOf(t.p)) + ".");
+  };
+  dlg.onclose = () => { if(dlg.returnValue === "ok") commit(); };
+  dlg.showModal();
+}
+
+/* ---------- access routes ---------- */
+function linkRoute(stand){
+  const cands = trails.filter(t => t.kind === "route");
+  if(!cands.length){
+    toast("Draw or walk a line first, set its type to Access route, then link it.");
+    return;
+  }
+  if(primary && getT(primary) && getT(primary).kind === "route"){
+    const r = getT(primary);
+    r.stands = [...new Set([...(r.stands || []), stand.id])];
+    after("Linked " + (r.name || "that route") + " to " + (stand.name || "this stand") + ".");
+    return;
+  }
+  const last = cands[cands.length-1];
+  last.stands = [...new Set([...(last.stands || []), stand.id])];
+  after("Linked " + (last.name || "the newest route") + ". Pick a different route first to link that one instead.");
+}
+
+/* ---------- sit log panel ---------- */
+function renderSits(){
+  const box = document.getElementById("sitbody");
+  if(!box) return;
+  const cnt = document.getElementById("sitcount");
+  if(cnt) cnt.textContent = sitOpen ? "sitting now" : (inSeason(sits).length + " this season");
+  box.textContent = "";
+  const btn = document.getElementById("sitbtn");
+  btn.textContent = sitOpen ? "End sit" : "Start sit";
+  btn.classList.toggle("go", !sitOpen);
+  btn.classList.toggle("rec", !!sitOpen);
+  btn.setAttribute("aria-pressed", String(!!sitOpen));
+
+  if(sitOpen){
+    const sel = el("select", {});
+    sel.appendChild(el("option", {value:""}, ["— pick a stand —"]));
+    for(const p of pins) if(p.t === "stand" || p.t === "blind"){
+      const o = el("option", {value:p.id}, [p.name || PINS[p.t].label]);
+      if(p.id === sitOpen.stand) o.selected = true;
+      sel.appendChild(o);
+    }
+    sel.addEventListener("change", () => {
+      sitOpen.stand = sel.value || null;
+      const p = pins.find(x => x.id === sel.value);
+      sitOpen.standName = p ? (p.name || "unnamed") : "";
+      saveState();
+    });
+    box.append(field("Stand", sel));
+    const seen = el("input", {type:"number", min:"0", step:"1", value:String(sitOpen.seen || 0)});
+    seen.addEventListener("input", () => { sitOpen.seen = Math.max(0, Number(seen.value) || 0); saveState(); });
+    box.append(field("Deer seen so far", seen));
+    const note = el("textarea", {placeholder:"Anything worth remembering"});
+    note.value = sitOpen.note || "";
+    note.addEventListener("input", () => { sitOpen.note = note.value; saveState(); });
+    box.append(field("Note", note));
+    const bits = ["in " + sitOpen.in];
+    if(sitOpen.wind) bits.push("wind " + sitOpen.wind + " " + sitOpen.windSpeed);
+    if(sitOpen.temp !== null && sitOpen.temp !== undefined) bits.push(sitOpen.temp + "°");
+    box.append(el("div", {class:"stat"}, [bits.join(" · ") + " — captured automatically"]));
+  }else{
+    const season = inSeason(sits);
+    const deer = season.reduce((n, s) => n + (s.seen || 0), 0);
+    box.append(el("div", {class:"stat"}, [
+      season.length ? season.length + " sits this season · " + deer + " deer · " +
+        (deer/season.length).toFixed(1) + " per sit"
+                    : "No sits logged yet. The blank ones matter most."]));
+    const ids = [...new Set(season.map(s => s.stand).filter(Boolean))];
+    ids.sort((a,b) => standStats(b).per - standStats(a).per);
+    for(const id of ids){
+      const p = pins.find(x => x.id === id), st = standStats(id);
+      const row = el("div", {class:"sitrow"}, [
+        el("b", {}, [p ? (p.name || PINS[p.t].label) : "gone"]),
+        el("span", {}, [st.sits + (st.sits === 1 ? " sit · " : " sits · ") + st.deer + " deer · " +
+                        (st.per !== null ? st.per.toFixed(1) + "/sit" : "—")]),
+        el("span", {class:st.hot ? "warn" : ""},
+           [st.days === null ? "" : st.hot ? "sat " + st.sits + "×, last " + st.days + "d ago — resting it"
+                                           : "last " + st.days + "d ago"])
+      ]);
+      row.onclick = () => { if(p){ selPin = p.id; selT.clear(); primary = null; centerOn(p.x, p.y); renderInsp(); draw(); } };
+      box.append(row);
+    }
+    for(const s of sits.slice(0, 6)){
+      box.append(el("div", {class:"stat dim"}, [
+        s.date + "  " + (s.standName || "—") + "  " + (s.in || "") + "–" + (s.out || "") +
+        "  " + (s.seen || 0) + " deer" + (s.wind ? "  " + s.wind + " " + s.windSpeed : "")]));
+    }
+  }
+}
+
+/* ---------- approach-wind check ----------
+   A stand can play the wind perfectly while the walk in blows it out. This looks
+   at the route, not just the stand, which is the failure you cannot otherwise see. */
+function approachRisk(stand, windFromDeg){
+  const rs = trails.filter(t => t.kind === "route" && (t.stands || []).includes(stand.id));
+  if(!rs.length || windFromDeg === null) return null;
+  const toward = (windFromDeg + 180) % 360;    // the way your scent travels
+  let worst = 0, hits = 0, total = 0;
+  for(const r of rs) for(const q of r.p){
+    const dx = stand.x - q[0], dy = stand.y - q[1];
+    const d = Math.hypot(dx, dy) * MPP();
+    total++;
+    if(d > 230 || d < 8) continue;             // 250 yd of relevance
+    let brg = (Math.atan2(dx, -dy) * 180/Math.PI + 360) % 360;
+    let off = Math.abs(((brg - toward + 540) % 360) - 180);
+    if(off < 50){ hits++; worst = Math.max(worst, 50 - off); }
+  }
+  if(!total) return null;
+  const frac = hits / total;
+  if(frac < .08) return null;
+  return {frac, text:"Your approach runs upwind of this stand on a " +
+          degToCompass(windFromDeg) + " wind — " + Math.round(frac*100) +
+          "% of the route carries scent into it."};
 }
 
 /* ---------- trail list ---------- */
@@ -1465,7 +2029,7 @@ function syncList(){
   const box = document.getElementById("tlist");
   box.textContent = "";
   document.getElementById("tcount").textContent =
-    trails.length + " lines · " + (trails.reduce((s,t) => s+lenOf(t.p), 0)/1609.34).toFixed(2) + " mi";
+    trails.length + " lines · " + fmtDist(trails.reduce((s,t) => s+lenOf(t.p), 0));
   for(const {t, L} of trails.map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L)){
     const row = el("div", {class:"trow", "aria-selected":String(selT.has(t.id))});
     const nm = el("span", {class:"nm", title:"Double-tap to rename"},
@@ -1515,10 +2079,10 @@ function toast(m){
 }
 function nudgeStat(){
   document.getElementById("nudgestat").textContent =
-    Math.round(Math.hypot(nudge.dx, nudge.dy) * (D ? MPP() : 1)) + " m · " +
+    fmtDist(Math.hypot(nudge.dx, nudge.dy) * (D ? MPP() : 1)) + " · " +
     nudge.rot.toFixed(1) + "° · " + Math.round(nudge.scl*100) + "%";
 }
-document.getElementById("tools").addEventListener("click", e => {
+for(const box of ["tools","tools2"]) document.getElementById(box).addEventListener("click", e => {
   const b = e.target.closest("[data-tool]"); if(b) setTool(b.dataset.tool);
 });
 document.querySelectorAll("[data-toggle]").forEach(h => h.addEventListener("click", () => {
@@ -1564,6 +2128,82 @@ document.getElementById("nudgebody").parentElement.addEventListener("click", e =
   nudgeStat(); draw();
 });
 
+/* ---------- mobile bottom sheet ----------
+   Three stops. Peek keeps the four actions you actually use in a stand within
+   thumb reach; half and full are for everything else. The map is visible above
+   it at every stop, which the old full-height panel could not manage. */
+const SHEET = (() => {
+  const rail = document.getElementById("rail");
+  const grab = document.getElementById("sheetgrab");
+  const isPhone = () => matchMedia("(max-width:760px)").matches;
+  const stops = () => {
+    const h = document.getElementById("stage").getBoundingClientRect().height;
+    return [108, Math.round(h*.46), Math.round(h*.86)];
+  };
+  let at = 0;
+  try{ const v = +localStorage.getItem("sheetStop"); if(v >= 0 && v <= 2) at = v; }catch(_){}
+  function apply(px){ rail.style.setProperty("--sheet-h", Math.round(px) + "px"); }
+  function go(i, remember){
+    at = Math.max(0, Math.min(2, i));
+    apply(stops()[at]);
+    if(remember !== false){ try{ localStorage.setItem("sheetStop", at); }catch(_){} }
+  }
+  function nearest(px){
+    const s = stops();
+    let best = 0, bd = Infinity;
+    s.forEach((v, i) => { const d = Math.abs(v-px); if(d < bd){ bd = d; best = i; } });
+    return best;
+  }
+  let drag = null;
+  grab.addEventListener("pointerdown", e => {
+    if(!isPhone()) return;
+    grab.setPointerCapture(e.pointerId);
+    drag = {y:e.clientY, h:rail.getBoundingClientRect().height, moved:false};
+    rail.dataset.dragging = "1";
+  });
+  grab.addEventListener("pointermove", e => {
+    if(!drag) return;
+    const dy = drag.y - e.clientY;
+    if(Math.abs(dy) > 4) drag.moved = true;
+    const max = stops()[2];
+    apply(Math.max(60, Math.min(max, drag.h + dy)));
+    e.preventDefault();
+  });
+  const release = () => {
+    if(!drag) return;
+    delete rail.dataset.dragging;
+    if(drag.moved) go(nearest(rail.getBoundingClientRect().height));
+    else go((at+1) % 3);               // a tap cycles, so it works without a drag
+    drag = null;
+  };
+  grab.addEventListener("pointerup", release);
+  grab.addEventListener("pointercancel", release);
+  grab.addEventListener("keydown", e => {
+    if(e.key === "ArrowUp"){ go(at+1); e.preventDefault(); }
+    if(e.key === "ArrowDown"){ go(at-1); e.preventDefault(); }
+    if(e.key === "Enter" || e.key === " "){ go((at+1)%3); e.preventDefault(); }
+  });
+  addEventListener("resize", () => { if(isPhone()) apply(stops()[at]); });
+  return {
+    go, isPhone,
+    atLeast(i){ if(isPhone() && at < i) go(i, false); },
+    init(){ if(isPhone()) apply(stops()[at]); }
+  };
+})();
+
+/* the peek row drives the same handlers as the desktop GPS bar */
+const mirror = (from, to) => {
+  const a = document.getElementById(from), b = document.getElementById(to);
+  b.onclick = () => a.click();
+  new MutationObserver(() => { b.disabled = a.disabled; })
+    .observe(a, {attributes:true, attributeFilter:["disabled"]});
+  b.disabled = a.disabled;
+};
+mirror("gpsbtn", "sp-locate");
+mirror("markhere", "sp-mark");
+mirror("briefbtn", "sp-brief");
+document.getElementById("sp-pin").onclick = () => { setTool("mark"); SHEET.go(0); };
+
 /* ---------- persistence ---------- */
 let saveT = null, saving = false, dirty = false;
 function setSave(s, txt){ const n = document.getElementById("savestate"); n.dataset.s = s; n.textContent = txt; }
@@ -1575,7 +2215,7 @@ async function doSave(){
   if(saving) return;
   saving = true;
   try{
-    await DB.set("state", {v:1, trails, pins, nudge, at:new Date().toISOString()});
+    await DB.set("state", {v:2, trails, pins, sits, sitOpen, nudge, at:new Date().toISOString()});
     dirty = false; setSave("saved", "Saved");
   }catch(_){ setSave("local", "Save failed"); }
   finally{
@@ -1591,19 +2231,17 @@ function startMap(pack, state){
   trails = (state && state.trails) || (pack.trails || []).map((t,i) =>
     ({id:t.id || ("t"+i), p:t.p, name:t.name || "", kind:KINDS[t.kind] ? t.kind : "trail"}));
   pins = (state && state.pins) || pack.pins || [];
+  sits = (state && state.sits) || [];
+  sitOpen = (state && state.sitOpen) || null;
   nudge = (state && state.nudge) || {dx:0, dy:0, rot:0, scl:1};
   document.getElementById("title").textContent = pack.name || "Hunt Map";
   document.getElementById("subline").innerHTML =
     (pack.relief_ft ? "RELIEF <b>" + pack.relief_ft[0] + "–" + pack.relief_ft[1] + " ft</b> · " : "") +
     "CONTOURS <b>10 ft</b> · BUILD <b>" + BUILD + "</b>";
   if(pack.aerial){ aerialImg = new Image(); aerialImg.onload = draw; aerialImg.src = pack.aerial; }
-  if(pack.hillshade){ hillImg = new Image(); hillImg.onload = draw; hillImg.src = pack.hillshade; }
   document.getElementById("welcome").hidden = true;
-  if(innerWidth < 760){          // on a phone the panel would cover the map
-    document.getElementById("rail").hidden = true;
-    document.getElementById("railshow").hidden = false;
-  }
-  resize(); fit(); nudgeStat(); syncList(); setTool("pan"); draw();
+  SHEET.init();
+  resize(); fit(); nudgeStat(); syncList(); renderSits(); setTool("pan"); draw();
   setSave("saved", state ? "Saved" : "Ready");
 }
 async function loadPackFile(file){
@@ -1621,6 +2259,18 @@ document.getElementById("packin").onchange = e => {
   const f = e.target.files[0]; e.target.value = "";
   if(f) loadPackFile(f);
 };
+/* ---------- pin placement ---------- */
+document.getElementById("walkbtn").onclick = armWalk;
+document.getElementById("sitbtn").onclick = () => { sitOpen ? endSit() : startSit(); };
+
+document.getElementById("placego").onclick = () => {
+  const t = document.getElementById("pintype").value;
+  dropPin(atScreen(W/2, H/2), t);
+  toast((PINS[t] || PINS.note).label + " dropped at the crosshair.");
+  setTool("pan");
+};
+document.getElementById("placecancel").onclick = () => setTool("pan");
+
 document.getElementById("startblank").onclick = async () => {
   const blank = {name:"Blank map", mpp:1, w:2000, h:2000,
     bbox3857:[-9486681.73, 3697560.80, -9484218.69, 3700023.85],
