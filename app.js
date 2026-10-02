@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 24;
+const BUILD = 25;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -432,7 +432,7 @@ function draw(){
       ctx.strokeStyle = css("--danger"); ctx.lineWidth = 3.4; ctx.stroke();
     }
   }
-  if(layers.pins) for(const p of pins) drawPin(p);
+  if(layers.pins) for(const p of pins) if(pinShown(p)) drawPin(p);
   if(fix) drawFix();
   if(tool === "mark"){ drawCrosshair(); syncPlacing(); }
   if(eraseBox){
@@ -693,8 +693,11 @@ function syncPlacing(){
 
 /* ---------- hit tests ---------- */
 function hitPin(px, py){
+  /* A pin you have hidden must not be tappable either, or you select something
+     invisible and wonder why the panel is talking about a camera. */
+  if(!layers.pins) return null;
   for(let i = pins.length-1; i >= 0; i--)
-    if(Math.hypot(sx(pins[i].x)-px, sy(pins[i].y)-py) < GRAB) return pins[i];
+    if(pinShown(pins[i]) && Math.hypot(sx(pins[i].x)-px, sy(pins[i].y)-py) < GRAB) return pins[i];
   return null;
 }
 function hitTrail(px, py){
@@ -748,7 +751,7 @@ function restore(s){
   anchors = [];
   after(null);
 }
-function after(msg){ saveState(); syncList(); renderInsp(); renderSits(); draw(); if(msg) toast(msg); }
+function after(msg){ saveState(); syncList(); renderInsp(); renderSits(); renderPinKinds(); draw(); if(msg) toast(msg); }
 
 /* ---------- selection ---------- */
 function selectTrail(id, additive){
@@ -2035,7 +2038,8 @@ function renderPin(box, body){
   if(!p){ selPin = null; box.hidden = true; return; }
   box.hidden = false;
   const spec = PINS[p.t] || PINS.note;
-  document.getElementById("insp-title").textContent = spec.label;
+  document.getElementById("insp-title").textContent = (p.name ? p.name + " \u2014 " : "") + spec.label;
+  for(const line of pinFacts(p)) body.append(el("div", {class:"stat"}, [line]));
   const nameIn = el("input", {type:"text", value:p.name || "", placeholder:spec.label});
   nameIn.addEventListener("input", () => { p.name = nameIn.value; saveState(); draw(); });
   body.append(field("Label", nameIn));
@@ -2662,6 +2666,125 @@ async function doSave(){
   }
 }
 
+/* ---------- where the inspector lives ----------
+   #insp sits in #stage so it can float top-right on a laptop. At phone widths the
+   stylesheet makes it static with order:-1, meaning to lift it to the top of the
+   sheet — but `order` only sorts siblings, and #insp is not a sibling of the
+   sheet's cards. It is a child of #stage, so it laid out *below* the stage: on an
+   860 px screen it landed at y=860, exactly one viewport past the fold, inside a
+   container that does not scroll.
+
+   So the pin inspector has never once been visible on a phone. Every kill, every
+   heading, every note has been rendering faithfully into a panel nobody could
+   reach. No amount of CSS fixes it — the node has to move. */
+function placeInspector(){
+  const insp = document.getElementById("insp");
+  const sheet = document.getElementById("sheetscroll");
+  const stage = document.getElementById("stage");
+  if(!insp || !sheet || !stage) return;
+  const phone = matchMedia("(max-width:760px)").matches;
+  const want = phone ? sheet : stage;
+  if(insp.parentElement === want) return;
+  if(phone) sheet.insertBefore(insp, sheet.firstChild);
+  else stage.appendChild(insp);
+}
+
+/* ---------- the facts, before the form ----------
+   Tapping a pin should answer "what happened here" without reading a form.
+   The editable fields stay below; this is the part you read. */
+function pinFacts(p){
+  const L = [];
+  const when = p.when
+    ? new Date(p.when + "T12:00:00").toLocaleDateString(undefined, {month:"short", day:"numeric", year:"numeric"})
+    : "";
+  const dist = (a, b) => fmtDist(Math.hypot(a[0]-b[0], a[1]-b[1]) * MPP());
+
+  if(p.t === "kill"){
+    const head = p.sex === "doe" ? "Doe"
+      : "Buck" + (p.points ? ", " + p.points + " point" + (p.points === 1 ? "" : "s") : "");
+    L.push(head + (when ? "  ·  " + when : ""));
+    const bits = [];
+    if(Array.isArray(p.shotFrom) && Array.isArray(p.hitAt)) bits.push("shot " + dist(p.shotFrom, p.hitAt));
+    if(Array.isArray(p.hitAt) && Array.isArray(p.foundAt))
+      bits.push("ran " + dist(p.hitAt, p.foundAt) + " " +
+        degToCompass(Math.atan2(p.foundAt[0]-p.hitAt[0], -(p.foundAt[1]-p.hitAt[1]))*180/Math.PI));
+    if(bits.length) L.push(bits.join("  ·  "));
+  }else if(DIRECTIONAL.has(p.t)){
+    const bits = [(p.count > 1 ? p.count + " deer" : "1 deer")];
+    if(p.sexage && p.sexage !== "unknown") bits.push(p.sexage);
+    if(typeof p.dir === "number") bits.push("heading " + degToCompass(p.dir) + " (" + p.dir + "°)");
+    if(p.tod) bits.push(p.tod);
+    L.push(bits.join("  ·  "));
+    if(when) L.push(when);
+  }else if(p.t === "stand" || p.t === "blind"){
+    L.push(p.winds && p.winds.length ? "Huntable on " + p.winds.join(", ") : "No wind notes yet");
+    if(p.lastCheck) L.push("Last inspected " + p.lastCheck);
+  }else if(p.t === "cam" || p.t === "camdeer"){
+    const bits = [];
+    if(p.lastCard) bits.push("card pulled " + p.lastCard);
+    if(p.lastBatt) bits.push("battery " + p.lastBatt);
+    if(bits.length) L.push(bits.join("  ·  "));
+    if(when && p.t === "camdeer") L.push(when);
+  }else if(when) L.push(when);
+
+  if(p.note) L.push(p.note);
+  if(fix){
+    const f = llToWorld(fix.lon, fix.lat);
+    L.push(dist([p.x, p.y], f) + " from you");
+  }
+  return L;
+}
+
+/* ---------- showing only the kinds you care about ----------
+   Seventeen kinds of pin on 120 acres gets busy fast. Hiding a kind is a viewing
+   preference, not data, so it is stored per device and never synced: what you
+   want to look at on the phone in the stand is not what you want on the laptop. */
+let hiddenPins = new Set();
+try{
+  const raw = localStorage.getItem("hiddenPins");
+  if(raw) hiddenPins = new Set(JSON.parse(raw));
+}catch(_){}
+const pinShown = p => !hiddenPins.has(p.t);
+function saveHidden(){
+  try{ localStorage.setItem("hiddenPins", JSON.stringify([...hiddenPins])); }catch(_){}
+}
+function setPinKind(k, on){
+  on ? hiddenPins.delete(k) : hiddenPins.add(k);
+  /* A hidden pin must not stay selected, or you are editing something you
+     cannot see. */
+  if(selPin){
+    const sp = pins.find(x => x.id === selPin);
+    if(sp && !pinShown(sp)){ selPin = null; renderInsp(); }
+  }
+  saveHidden(); renderPinKinds(); draw();
+}
+function renderPinKinds(){
+  const list = document.getElementById("pintypelist");
+  if(!list) return;
+  const counts = {};
+  for(const p of pins) counts[p.t] = (counts[p.t] || 0) + 1;
+  const kinds = Object.keys(PINS).filter(k => counts[k]);
+  list.textContent = "";
+  if(!kinds.length){
+    list.append(el("div", {class:"hint"}, ["No pins yet."]));
+  }else{
+    for(const k of kinds){
+      const on = !hiddenPins.has(k);
+      const row = el("label", {class:"chk"});
+      const box = el("input", {type:"checkbox"});
+      box.checked = on;
+      box.addEventListener("change", () => setPinKind(k, box.checked));
+      row.append(box,
+        el("span", {class:"swatch", style:"background:" + PINS[k].color}),
+        document.createTextNode(PINS[k].label + "  (" + counts[k] + ")"));
+      list.append(row);
+    }
+  }
+  const hid = kinds.filter(k => hiddenPins.has(k)).length;
+  const tag = document.getElementById("pintypecount");
+  if(tag) tag.textContent = hid ? "— " + hid + " hidden" : "";
+}
+
 /* ---------- sync between devices ----------
    The map pack is the ground and it ships with the app. This is the other half:
    the pins, trails and sits you actually make, which until now lived on whichever
@@ -3092,8 +3215,8 @@ const ptsel = document.getElementById("pintype");
 for(const k in PINS){ const o = document.createElement("option"); o.value = k; o.textContent = PINS[k].label; ptsel.appendChild(o); }
 ptsel.value = "stand";
 
-window.addEventListener("resize", () => { resize(); draw(); });
-window.addEventListener("orientationchange", () => setTimeout(() => { resize(); fit(); draw(); }, 250));
+window.addEventListener("resize", () => { placeInspector(); resize(); draw(); });
+window.addEventListener("orientationchange", () => setTimeout(() => { placeInspector(); resize(); fit(); draw(); }, 250));
 
 (async function boot(){
   resize();
@@ -3105,6 +3228,14 @@ window.addEventListener("orientationchange", () => setTimeout(() => { resize(); 
   renderSync();
   /* Pull anything the other device did while this one was shut. */
   syncNow(false);
+  placeInspector();
+  renderPinKinds();
+  document.getElementById("pt-all").onclick  = () => { hiddenPins.clear(); saveHidden(); renderPinKinds(); draw(); };
+  document.getElementById("pt-none").onclick = () => {
+    for(const k in PINS) hiddenPins.add(k);
+    if(selPin){ selPin = null; renderInsp(); }
+    saveHidden(); renderPinKinds(); draw();
+  };
   setPinsMovable(pinsMovable);
   document.getElementById("pinlock").onclick = () => setPinsMovable(!pinsMovable);
   document.getElementById("syncconnect").onclick = connectSync;

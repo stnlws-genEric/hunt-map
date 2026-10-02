@@ -306,6 +306,14 @@ dl.keys dd{margin:0;color:var(--ink-2)}
           <label class="chk"><input type="checkbox" id="L-trail" checked><span class="swatch" style="background:var(--blaze)"></span>Trails</label>
           <label class="chk"><input type="checkbox" id="L-labels" checked><span class="swatch" style="background:#fff;border:1px solid var(--line)"></span>Trail names</label>
           <label class="chk"><input type="checkbox" id="L-pins" checked><span class="swatch" style="background:var(--water)"></span>Pins</label>
+          <details id="pintypes" style="margin-top:.35rem">
+            <summary class="hint" style="cursor:pointer">Which kinds of pin <span id="pintypecount"></span></summary>
+            <div class="row g2" style="margin:.35rem 0 .3rem">
+              <button class="btn sm" id="pt-all">Show all</button>
+              <button class="btn sm" id="pt-none">Hide all</button>
+            </div>
+            <div id="pintypelist"></div>
+          </details>
         </div>
       </div>
 
