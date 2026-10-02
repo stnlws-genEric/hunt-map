@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 26;
+const BUILD = 27;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -1959,7 +1959,7 @@ function el(tag, attrs, kids){
 const field = (label, input) => el("label", {class:"field"}, [el("span", {}, [label]), input]);
 
 function renderInsp(){
-  if((selPin || primary || selT.size) && typeof SHEET !== "undefined") SHEET.atLeast(1);
+  if((selPin || primary || selT.size) && typeof SHEET !== "undefined") SHEET.atLeast(2);
   const box = document.getElementById("insp"), body = document.getElementById("insp-body");
   body.textContent = "";
   if(selPin) return renderPin(box, body);
@@ -2575,22 +2575,54 @@ const SHEET = (() => {
   const rail = document.getElementById("rail");
   const grab = document.getElementById("sheetgrab");
   const isPhone = () => matchMedia("(max-width:760px)").matches;
+  const hide = document.getElementById("sheethide");
+  const show = document.getElementById("sheetshow");
+  /* 0 is away: the panel is gone and a single round button in the corner brings
+     it back. 1-3 are the open sizes. Dragging and tapping the bar move between
+     the open sizes only — you cannot accidentally cycle the handle out of
+     existence, which would leave nothing to grab. */
   const stops = () => {
     const h = document.getElementById("stage").getBoundingClientRect().height;
-    return [108, Math.round(h*.46), Math.round(h*.86)];
+    return [0, 108, Math.round(h*.46), Math.round(h*.86)];
   };
-  let at = 0;
-  try{ const v = +localStorage.getItem("sheetStop"); if(v >= 0 && v <= 2) at = v; }catch(_){}
+  let at = 1, lastOpen = 1;
+  try{
+    /* getItem returns null for a key that was never set, and +null is 0 — which
+       now means "away". Read it as a missing value, not as a instruction to
+       start with the panel hidden on a brand-new install. */
+    const raw = localStorage.getItem("sheetStop");
+    if(raw !== null){ const v = +raw; if(v >= 0 && v <= 3) at = v; }
+    const o = +localStorage.getItem("sheetOpen");
+    lastOpen = (o >= 1 && o <= 3) ? o : 1;
+  }catch(_){}
   function apply(px){ rail.style.setProperty("--sheet-h", Math.round(px) + "px"); }
+  function paint(){
+    const away = isPhone() && at === 0;
+    rail.hidden = away;
+    if(show) show.hidden = !away;
+    /* The crosshair centres on the visible map, so it has to be recomputed the
+       moment the panel stops covering part of it. */
+    if(typeof draw === "function" && typeof D !== "undefined" && D) draw();
+  }
   function go(i, remember){
-    at = Math.max(0, Math.min(2, i));
+    at = Math.max(0, Math.min(3, i));
+    if(at > 0) lastOpen = at;
     apply(stops()[at]);
-    if(remember !== false){ try{ localStorage.setItem("sheetStop", at); }catch(_){} }
+    paint();
+    if(remember !== false){
+      try{
+        localStorage.setItem("sheetStop", at);
+        localStorage.setItem("sheetOpen", lastOpen);
+      }catch(_){}
+    }
   }
   function nearest(px){
     const s = stops();
-    let best = 0, bd = Infinity;
-    s.forEach((v, i) => { const d = Math.abs(v-px); if(d < bd){ bd = d; best = i; } });
+    let best = 1, bd = Infinity;          // never snap to away; that is a button, not a drag
+    for(let i = 1; i < s.length; i++){
+      const d = Math.abs(s[i] - px);
+      if(d < bd){ bd = d; best = i; }
+    }
     return best;
   }
   let drag = null;
@@ -2612,7 +2644,7 @@ const SHEET = (() => {
     if(!drag) return;
     delete rail.dataset.dragging;
     if(drag.moved) go(nearest(rail.getBoundingClientRect().height));
-    else go((at+1) % 3);               // a tap cycles, so it works without a drag
+    else go(at >= 3 ? 1 : at + 1);     // a tap cycles the open sizes, 1 -> 2 -> 3 -> 1
     drag = null;
   };
   grab.addEventListener("pointerup", release);
@@ -2620,13 +2652,19 @@ const SHEET = (() => {
   grab.addEventListener("keydown", e => {
     if(e.key === "ArrowUp"){ go(at+1); e.preventDefault(); }
     if(e.key === "ArrowDown"){ go(at-1); e.preventDefault(); }
-    if(e.key === "Enter" || e.key === " "){ go((at+1)%3); e.preventDefault(); }
+    if(e.key === "Enter" || e.key === " "){ go(at >= 3 ? 1 : at + 1); e.preventDefault(); }
   });
-  addEventListener("resize", () => { if(isPhone()) apply(stops()[at]); });
+  if(hide) hide.addEventListener("click", e => { e.stopPropagation(); go(0); });
+  if(show) show.addEventListener("click", () => go(lastOpen || 1));
+  addEventListener("resize", () => { if(isPhone()){ apply(stops()[at]); paint(); } else paint(); });
   return {
     go, isPhone,
+    where: () => at,
+    /* Tapping a pin is a request to see that pin. It outranks having tucked the
+       panel away, so this brings it back rather than leaving you tapping at a
+       map that answers nothing. */
     atLeast(i){ if(isPhone() && at < i) go(i, false); },
-    init(){ if(isPhone()) apply(stops()[at]); }
+    init(){ if(isPhone()){ apply(stops()[at]); } paint(); }
   };
 })();
 
@@ -2641,7 +2679,9 @@ const mirror = (from, to) => {
 mirror("gpsbtn", "sp-locate");
 mirror("markhere", "sp-mark");
 mirror("briefbtn", "sp-brief");
-document.getElementById("sp-pin").onclick = () => { setTool("mark"); SHEET.go(0); };
+/* Placing a pin wants the map, not the panel: drop to peek so the crosshair and
+   the Place bar are both clear. Peek is stop 1 now that 0 means away. */
+document.getElementById("sp-pin").onclick = () => { setTool("mark"); SHEET.go(1); };
 
 /* ---------- persistence ---------- */
 let saveT = null, saving = false, dirty = false;
@@ -2650,6 +2690,17 @@ function saveState(){
   dirty = true; setSave("saving", "Saving…");
   clearTimeout(saveT); saveT = setTimeout(doSave, 700);
 }
+/* Saving is debounced by 700ms so a drag does not write on every frame. That
+   leaves a window where the last thing you did is not on disk yet, and on a
+   phone that window is exactly when you lock the screen or swipe away. Flush it
+   the moment the app goes to the background. */
+function flushSave(){
+  if(!dirty) return;
+  clearTimeout(saveT);
+  doSave();
+}
+document.addEventListener("visibilitychange", () => { if(document.hidden) flushSave(); });
+window.addEventListener("pagehide", flushSave);
 async function doSave(){
   if(saving) return;
   saving = true;
@@ -3147,7 +3198,10 @@ function startMap(pack, state){
   refreshSnap();
   sitOpen = (state && state.sitOpen) || null;
   nudge = (state && state.nudge) || {dx:0, dy:0, rot:0, scl:1};
-  document.getElementById("title").textContent = pack.name || "Hunt Map";
+  /* The header strip lost its title — the name of your own land was the one fact
+     on screen you already knew. It still names the browser tab and the app
+     switcher card, where it actually helps. */
+  document.title = (pack.name || "Hunt Map") + " — Hunt Map";
   document.getElementById("subline").innerHTML =
     (pack.relief_ft ? "RELIEF <b>" + pack.relief_ft[0] + "–" + pack.relief_ft[1] + " ft</b> · " : "") +
     "CONTOURS <b>10 ft</b> · BUILD <b>" + BUILD + "</b>";
