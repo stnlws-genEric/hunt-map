@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 21;
+const BUILD = 22;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -2616,6 +2616,48 @@ async function doSave(){
   }
 }
 
+/* ---------- staying installed ----------
+   Two separate things were quietly costing the map on the phone.
+
+   The first is self-inflicted: every build note said to delete the app from the
+   home screen and add it again. On iOS, deleting a home-screen web app deletes
+   its storage with it, so each "install" started from an empty IndexedDB and the
+   map pack had to be imported from scratch. That dance existed only to defeat a
+   stale service worker, and the service worker has fetched code network-first
+   since build 17, so it was never needed. The update bar below replaces it.
+
+   The second is iOS itself: a site's script-writable storage is cleared after
+   roughly seven days without use unless it has been granted persistent storage,
+   and nobody opens a hunting app every week in July. */
+let persisted = null;
+async function ensurePersist(){
+  try{
+    if(!navigator.storage || !navigator.storage.persist){ persisted = false; return false; }
+    persisted = await navigator.storage.persisted();
+    if(!persisted) persisted = await navigator.storage.persist();
+  }catch(_){ persisted = false; }
+  showStorage();
+  return persisted;
+}
+function showStorage(){
+  const n = document.getElementById("storagestat");
+  if(!n) return;
+  n.textContent = persisted === true
+    ? "Storage is pinned on this device — iOS will not clear it while the app stays installed."
+    : persisted === false
+      ? "This browser would not pin storage. Keep a backup: iOS can clear it after about a week unused."
+      : "";
+}
+
+/* A new build takes over without you deleting anything. */
+function offerUpdate(){
+  const bar = document.getElementById("updatebar");
+  if(!bar || !bar.hidden) return;
+  bar.hidden = false;
+  document.getElementById("updatego").onclick = () => location.reload();
+  document.getElementById("updatelater").onclick = () => { bar.hidden = true; };
+}
+
 /* ---------- seed data ----------
    Creeks and terrain features belong to the land, not to a device. They used to
    ship as side files you imported by hand, which meant importing again on every
@@ -2706,6 +2748,7 @@ async function loadPackFile(file){
       }
     }
     await DB.set("pack", pack);
+    ensurePersist();
     if(!sameGround) await DB.del("state");
     startMap(pack, sameGround ? prev : null);
     await mergeSeed();
@@ -2769,7 +2812,24 @@ window.addEventListener("orientationchange", () => setTimeout(() => { resize(); 
     const pack = await DB.get("pack");
     if(pack){ startMap(pack, await DB.get("state")); await mergeSeed(); }
   }catch(_){}
+  ensurePersist();
   if("serviceWorker" in navigator && location.protocol.startsWith("http")){
-    try{ await navigator.serviceWorker.register("sw.js"); }catch(_){}
+    try{
+      const reg = await navigator.serviceWorker.register("sw.js");
+      reg.addEventListener("updatefound", () => {
+        const sw = reg.installing;
+        if(!sw) return;
+        sw.addEventListener("statechange", () => {
+          /* controller means this page is already running under a service worker,
+             so an install now is an update rather than the very first one. */
+          if(sw.state === "installed" && navigator.serviceWorker.controller) offerUpdate();
+        });
+      });
+      /* Check again whenever the app comes back to the foreground, which on a
+         phone is the moment you actually want a fresh build to land. */
+      document.addEventListener("visibilitychange", () => {
+        if(!document.hidden) reg.update().catch(() => {});
+      });
+    }catch(_){}
   }
 })();
