@@ -2,8 +2,8 @@
    The app's own code is fetched network-first so an update reaches you on the
    next load rather than the one after; the cache is the fallback when there is
    no signal. Icons and fonts stay cache-first since they never change. */
-const CACHE = "huntmap-v19";
-const SHELL = ["./", "./index.html", "./app.js", "./manifest.webmanifest",
+const CACHE = "huntmap-v20";
+const SHELL = ["./", "./index.html", "./app.js", "./seed.geojson", "./manifest.webmanifest",
                "./icon-180-v16.png", "./icon-192-v16.png", "./icon-512-v16.png"];
 
 self.addEventListener("install", e => {
@@ -19,8 +19,12 @@ self.addEventListener("fetch", e => {
   if(e.request.method !== "GET") return;
   if(url.hostname.endsWith("weather.gov")) return;      // never cache weather
 
+  /* seed.geojson is network-first with the code, not cache-first with the
+     icons. It changes when the map data changes, and a cache-first copy would
+     mean new creeks or terrain never reaching a device that already has the
+     app installed. */
   const isCode = url.origin === location.origin &&
-                 /(\.html|\.js|\.webmanifest|\/)$/.test(url.pathname);
+                 /(\.html|\.js|\.geojson|\.webmanifest|\/)$/.test(url.pathname);
   if(isCode){
     e.respondWith(
       fetch(e.request).then(res => {

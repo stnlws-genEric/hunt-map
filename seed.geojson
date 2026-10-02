@@ -1,0 +1,338 @@
+{
+ "type": "FeatureCollection",
+ "note": "Seed data that ships with Hunt Map. Merged on boot by stable id; never merged twice.",
+ "features": [
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "North Creek",
+    "kind": "creek",
+    "type": "creek",
+    "source": "traced by Steven on the aerial, 1 Oct 2026",
+    "length_yd": 945,
+    "id": "seed:creek:north-creek-1",
+    "note": "[traced by Steven on the aerial, 1 Oct 2026]"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      -85.214562,
+      31.50759
+     ],
+     [
+      -85.214228,
+      31.507646
+     ],
+     [
+      -85.213927,
+      31.507993
+     ],
+     [
+      -85.213772,
+      31.508077
+     ],
+     [
+      -85.212078,
+      31.50825
+     ],
+     [
+      -85.210774,
+      31.509063
+     ],
+     [
+      -85.210277,
+      31.509174
+     ],
+     [
+      -85.209333,
+      31.509236
+     ],
+     [
+      -85.208689,
+      31.509417
+     ],
+     [
+      -85.207581,
+      31.509438
+     ],
+     [
+      -85.206734,
+      31.509118
+     ],
+     [
+      -85.206636,
+      31.509021
+     ],
+     [
+      -85.206267,
+      31.509053
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "West Creek (Abbie Creek tributary)",
+    "kind": "creek",
+    "type": "creek",
+    "source": "USGS NHD, confirmed against the DEM (12 m median offset)",
+    "id": "seed:creek:west-creek-abbie-creek-tributary-2",
+    "note": "[USGS NHD, confirmed against the DEM (12 m median offset)]"
+   },
+   "geometry": {
+    "type": "LineString",
+    "coordinates": [
+     [
+      -85.208918,
+      31.501172
+     ],
+     [
+      -85.209298,
+      31.501695
+     ],
+     [
+      -85.209831,
+      31.502621
+     ],
+     [
+      -85.210317,
+      31.503173
+     ],
+     [
+      -85.210902,
+      31.503881
+     ],
+     [
+      -85.21138,
+      31.504475
+     ],
+     [
+      -85.21202,
+      31.505111
+     ],
+     [
+      -85.212403,
+      31.505342
+     ],
+     [
+      -85.2129,
+      31.505506
+     ],
+     [
+      -85.213281,
+      31.505864
+     ],
+     [
+      -85.213443,
+      31.506645
+     ],
+     [
+      -85.213556,
+      31.507069
+     ],
+     [
+      -85.213939,
+      31.507344
+     ],
+     [
+      -85.214278,
+      31.507442
+     ],
+     [
+      -85.214772,
+      31.507654
+     ],
+     [
+      -85.215177,
+      31.507764
+     ],
+     [
+      -85.215531,
+      31.507875
+     ]
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Saddle",
+    "kind": "terrain",
+    "note": "low crossing in a ridge — deer cross ridges here [computed from your DEM]",
+    "elev_ft": 321,
+    "source": "computed from your DEM",
+    "id": "seed:terr:saddle-3"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.209405,
+     31.510747
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Bench",
+    "kind": "terrain",
+    "note": "flat shelf on a slope — bedding and sidehill travel [computed from your DEM]",
+    "elev_ft": 288,
+    "source": "computed from your DEM",
+    "id": "seed:terr:bench-4"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.210572,
+     31.510284
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Bench",
+    "kind": "terrain",
+    "note": "flat shelf on a slope — bedding and sidehill travel [computed from your DEM]",
+    "elev_ft": 315,
+    "source": "computed from your DEM",
+    "id": "seed:terr:bench-5"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.216464,
+     31.504494
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 300,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-6"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.213247,
+     31.508199
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 308,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-7"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.214748,
+     31.506667
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 318,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-8"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.21093,
+     31.508788
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 317,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-9"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.21181,
+     31.503572
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 294,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-10"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.212433,
+     31.506382
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Spur",
+    "kind": "terrain",
+    "note": "ridge finger — deer travel the nose and the wind stays steady [computed from your DEM]",
+    "elev_ft": 347,
+    "source": "computed from your DEM",
+    "id": "seed:terr:spur-11"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.206985,
+     31.507685
+    ]
+   }
+  },
+  {
+   "type": "Feature",
+   "properties": {
+    "name": "Creek crossing",
+    "kind": "terrain",
+    "note": "a trail crosses a creek here — a natural funnel [computed from your trails + traced creeks]",
+    "source": "computed from your trails + traced creeks",
+    "id": "seed:terr:creek-crossing-12"
+   },
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     -85.213063,
+     31.505659
+    ]
+   }
+  }
+ ]
+}

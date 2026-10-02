@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 19;
+const BUILD = 20;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -73,6 +73,7 @@ const NAME_IDEAS = ["Main road","Camp road","Ridge road","Bottom road","Food plo
 /* ---------- state ---------- */
 let D = null;                       // the loaded map pack
 let trails = [], pins = [], sits = [];
+let seedDone = [];                  // seed ids already merged, so a deletion stays deleted
 let sitOpen = null;          // the sit in progress, if any
 let selT = new Set(), primary = null, selPin = null, anchors = [];
 let tool = "pan", editMode = "move", arrowPushed = false;
@@ -1109,7 +1110,7 @@ function onFix(pos){
     if(!last || Math.hypot(w[0]-last[0], w[1]-last[1]) * MPP() > 2) recording.pts.push(w);
   }
   document.getElementById("coord").textContent =
-    fmtLL(fix.lon, fix.lat) + "  ±" + Math.round(fix.acc) + "m";
+    fmtLL(fix.lon, fix.lat) + "  " + fmtAcc(fix.acc);
   draw();
 }
 function needFix(){
@@ -1177,11 +1178,21 @@ function centerOn(x, y){
   view.tx = W/2 - x*view.k; view.ty = H/2 - y*view.k; draw();
 }
 
-/* ---------- weather (National Weather Service, free, no key) ---------- */
+/* ---------- weather (National Weather Service, free, no key) ----------
+   Worth being honest about what these numbers are. "Now" is the first hour of
+   the gridded hourly forecast, not a measurement: a ~2.5 km square smoothed by
+   a model. Only the pressure below is a real instrument reading, and the nearest
+   station is likely 20-odd miles off at Dothan. Good enough for trend and
+   direction; not good enough to tell you what the wind is doing in your timber.
+
+   WXV is a shape version. Build 19 cached 12 hourly rows, which is not enough to
+   reach tomorrow morning, so a cache written by an older build has to be thrown
+   away rather than quietly producing a short forecast. */
+const WXV = 2;
 async function getWeather(){
   const cached = await DB.get("wx");
   if(cached && cached.now) LASTWX = {deg:WINDDEG[cached.now.dir] ?? null, dir:cached.now.dir || ""};
-  const fresh = cached && (Date.now() - cached.at < 45*60*1000);
+  const fresh = cached && cached.v === WXV && (Date.now() - cached.at < 45*60*1000);
   if(fresh) return cached;
   const c = D.center || worldToLL(D.w/2, D.h/2);
   try{
@@ -1192,7 +1203,9 @@ async function getWeather(){
     if(!hr.ok) throw 0;
     const hj = await hr.json();
     const now = hj.properties.periods[0];
-    const next = hj.properties.periods.slice(0, 12).map(p => ({
+    /* 48 hours, not 12: the forecast mode has to be able to reach tomorrow
+       morning from late tonight, and the extra rows cost a few KB. */
+    const next = hj.properties.periods.slice(0, 48).map(p => ({
       t:p.startTime, temp:p.temperature, unit:p.temperatureUnit,
       wind:p.windSpeed, dir:p.windDirection, sky:p.shortForecast
     }));
@@ -1205,67 +1218,358 @@ async function getWeather(){
       const pa = oj.properties.barometricPressure;
       if(pa && pa.value) press = +(pa.value/3386.39).toFixed(2);   // Pa -> inHg
     }catch(_){}
-    const wx = {at:Date.now(), press, now:{temp:now.temperature, unit:now.temperatureUnit,
-                wind:now.windSpeed, dir:now.windDirection, sky:now.shortForecast}, next};
+    /* Keep a short rolling history of pressure readings. A single number tells
+       you nothing; the direction it is moving is one of the few weather signals
+       that actually predicts deer movement, and nobody else is going to store it
+       for us offline. 24 readings at 45 min apart covers about 18 hours. */
+    let hist = (cached && cached.hist) || [];
+    if(press !== null){
+      hist = hist.concat([{at:Date.now(), p:press}]).slice(-24);
+    }
+    const wx = {v:WXV, at:Date.now(), press, hist,
+                now:{temp:now.temperature, unit:now.temperatureUnit,
+                     wind:now.windSpeed, dir:now.windDirection, sky:now.shortForecast}, next};
     await DB.set("wx", wx);
     LASTWX = {deg:WINDDEG[wx.now.dir] ?? null, dir:wx.now.dir || ""};
     return wx;
   }catch(_){ return cached || null; }
 }
 
-/* ---------- briefing for Claude ---------- */
-async function buildBriefing(){
+/* Needs two readings at least 90 min apart before it will claim a direction.
+   Below 0.02 inHg it says steady rather than inventing a trend out of noise. */
+function pressureTrend(wx){
+  const h = (wx && wx.hist) || [];
+  if(h.length < 2) return null;
+  const last = h[h.length - 1];
+  let first = null;
+  for(let i = h.length - 2; i >= 0; i--){
+    if(last.at - h[i].at >= 90*60000){ first = h[i]; break; }
+  }
+  if(!first) return null;
+  const d = last.p - first.p, hrs = (last.at - first.at) / 36e5;
+  const over = " over " + (hrs < 1.5 ? "90 min" : Math.round(hrs) + "h");
+  if(Math.abs(d) < 0.02) return "steady" + over;
+  const word = d < 0 ? "falling" : "rising";
+  const read = d < -0.06 ? " — a drop like that is the best thing on this page"
+             : d >  0.06 ? " — a sharp rise usually means they moved before you got there"
+             : "";
+  return word + " " + Math.abs(d).toFixed(2) + " inHg" + over + read;
+}
+
+/* ---------- season, rut and the legal calendar ----------
+   Centerfire rifle only. Archery, muzzleloader and youth dates are deliberately
+   absent because Steven hunts his own land with a rifle, and showing him a
+   season he does not hunt is how an app teaches you to stop reading its banner.
+
+   Henry County is Zone A. The either-sex / bucks-only splits ADCNR publishes
+   apply to PUBLIC land and to dog hunting. On privately owned or leased land,
+   stalk hunting, the season is either sex the whole way through. Getting that
+   backwards would tell him "bucks only" on a day he can legally take a doe,
+   which is the expensive direction to be wrong in.
+
+   Dates are republished every licence year and this app has to work with no
+   signal, so they are baked in with a stamp rather than fetched. Check them
+   against the current digest each summer. */
+const SEASON = {
+  stamp: "2026–27 licence year",
+  zone:  "Zone A (Henry Co.) · gun, stalk hunting, privately owned or leased land",
+  open:  "2026-11-21",
+  close: "2027-02-10",
+  eitherSex: true
+};
+
+/* ADCNR's 2022 rut map: a spatial analysis of conception dates collected by WFF
+   biologists at herd health checks, 1995–2019. Real measured data, not folklore.
+   Breeding is photoperiod-locked, so the window holds year to year — it is
+   daylight that starts it, not a cold front. ADCNR also puts nearly all breeding
+   in a well-managed herd inside a 14–20 day span, which is what this is.
+
+   Henry County carries no sample marker of its own on that map. Its window is
+   read off the shading of the counties around it, so treat the edges as soft. */
+const RUT = {
+  from: "01-09", to: "01-24",
+  source: "ADCNR 2022 rut map, from 1995–2019 conception data",
+  caveat: "interpolated from neighbouring counties — Henry has no sample of its own, so give it a few days either side"
+};
+
+const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const ymdOf = d => d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") +
+                   "-" + String(d.getDate()).padStart(2,"0");
+const dayDiff = (a, b) => Math.round((Date.parse(b + "T00:00:00Z") - Date.parse(a + "T00:00:00Z")) / 864e5);
+const fmtMD = s => { const p = s.split("-"); return +p[2] + " " + MON[+p[1]-1]; };
+const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+
+function seasonState(now){
+  const t = ymdOf(now);
+  if(t < SEASON.open)  return {open:false, phase:"before", days:dayDiff(t, SEASON.open)};
+  if(t > SEASON.close) return {open:false, phase:"after",  days:dayDiff(SEASON.close, t)};
+  return {open:true, phase:"in", day:dayDiff(SEASON.open, t) + 1,
+          total:dayDiff(SEASON.open, SEASON.close) + 1, left:dayDiff(t, SEASON.close)};
+}
+
+/* The rut falls in January, which is the back half of a season that starts in
+   November. Anchor it to the year the season closes in, not the year it opens. */
+function rutWindow(){
+  const y = SEASON.close.slice(0, 4);
+  return {from:y + "-" + RUT.from, to:y + "-" + RUT.to};
+}
+function rutState(now){
+  const w = rutWindow(), t = ymdOf(now);
+  if(t < w.from) return {phase:"before", days:dayDiff(t, w.from), from:w.from, to:w.to};
+  if(t > w.to)   return {phase:"after",  days:dayDiff(w.to, t),   from:w.from, to:w.to};
+  return {phase:"in", day:dayDiff(w.from, t) + 1, from:w.from, to:w.to};
+}
+
+function seasonLines(now){
+  const s = seasonState(now), r = rutState(now), L = [];
+  if(s.open){
+    L.push("SEASON OPEN — centerfire rifle, day " + s.day + " of " + s.total +
+           ", closes " + fmtMD(SEASON.close) + " (" + plural(s.left, "day") + " left). Either sex throughout.");
+  }else if(s.phase === "before"){
+    L.push("!! SEASON CLOSED — centerfire rifle opens " + fmtMD(SEASON.open) +
+           ", " + plural(s.days, "day") + " away. Everything below is scouting, not a licence to shoot.");
+  }else{
+    L.push("!! SEASON CLOSED — centerfire rifle closed " + fmtMD(SEASON.close) +
+           ", " + plural(s.days, "day") + " ago. Next year's dates land in the summer digest.");
+  }
+  L.push("   " + SEASON.zone);
+  L.push("   Dates as of the " + SEASON.stamp + " — confirm against the current digest.");
+  if(r.phase === "in")
+    L.push("   RUT: day " + r.day + " of the expected window (" + fmtMD(r.from) + "–" + fmtMD(r.to) + "). This is the slice to burn vacation on.");
+  else if(r.phase === "before")
+    L.push("   RUT: expected " + fmtMD(r.from) + "–" + fmtMD(r.to) + ", " + plural(r.days, "day") + " out.");
+  else
+    L.push("   RUT: expected window " + fmtMD(r.from) + "–" + fmtMD(r.to) + " has passed (" + plural(r.days, "day") + " ago).");
+  L.push("   Rut source: " + RUT.source + "; " + RUT.caveat + ".");
+  return L;
+}
+
+/* ---------- the next huntable window ----------
+   The report should always point at the next time you can legally be in a tree,
+   never at the one you just missed.
+
+     midnight   → 11:00        this morning, through 11:00
+     11:00      → last light    this evening, through last light
+     last light → midnight      tomorrow morning, through 11:00
+
+   The evening boundary rides on legal light rather than a fixed clock hour, so
+   it walks forward through the season the way the deer do. */
+function legalLight(sun){
+  return {on:  sun.sunrise ? new Date(sun.sunrise.getTime() - 30*60000) : null,
+          off: sun.sunset  ? new Date(sun.sunset.getTime()  + 30*60000) : null};
+}
+function nextWindow(now, lat, lon){
+  const sunToday = sunTimes(now, lat, lon);
+  const ll = legalLight(sunToday);
+  const eleven = new Date(now); eleven.setHours(11, 0, 0, 0);
+
+  if(now < eleven){
+    const from = ll.on && ll.on > now ? ll.on : now;
+    return {label:"this morning", from, to:eleven, sun:sunToday, day:new Date(now), kind:"am"};
+  }
+  if(ll.off && now < ll.off)
+    return {label:"this evening", from:now, to:ll.off, sun:sunToday, day:new Date(now), kind:"pm"};
+
+  const tm = new Date(now.getTime() + 24*36e5);
+  const sun2 = sunTimes(tm, lat, lon), ll2 = legalLight(sun2);
+  const e2 = new Date(tm); e2.setHours(11, 0, 0, 0);
+  return {label:"tomorrow morning", from:ll2.on || new Date(tm.setHours(6,0,0,0)),
+          to:e2, sun:sun2, day:tm, kind:"am"};
+}
+
+/* ---------- scoring an hour ----------
+   Deliberately transparent: every point added or taken away comes back out as a
+   phrase, so the report can show its work instead of handing down a number.
+   Nothing here is a model. It is a checklist written down. */
+function parseMph(s){
+  const m = /(\d+)\s*(?:to\s*(\d+))?\s*mph/i.exec(s || "");
+  if(!m) return null;
+  return m[2] ? Math.round((+m[1] + +m[2]) / 2) : +m[1];
+}
+const to8 = d => (d && WINDDEG[d] !== undefined) ? degToCompass(WINDDEG[d]) : "";
+
+/* which stands each 8-point wind opens up */
+function standWindIndex(){
+  const idx = {};
+  for(const p of pins.filter(x => x.t === "stand" || x.t === "blind"))
+    for(const w of (p.winds || []))
+      (idx[w] = idx[w] || []).push(p.name || "unnamed");
+  return idx;
+}
+
+function scoreHour(p, win, idx){
+  const t = new Date(p.t), temp = p.temp, mph = parseMph(p.wind);
+  const d8 = to8(p.dir), sky = (p.sky || "").toLowerCase();
+  let s = 50;
+  /* Two lists, not one. A single "why" array reads as a list of reasons the hour
+     is good, so "dead calm" landed in it looking like a selling point. Anything
+     that costs points belongs in the second list, behind a "but". */
+  const plus = [], minus = [];
+
+  const mins = x => x ? Math.abs(t - x) / 60000 : 1e9;
+  const nr = mins(win.sun.sunrise), ns = mins(win.sun.sunset);
+  if(nr <= 90)                { s += 22; plus.push("first light"); }
+  else if(ns <= 90)           { s += 22; plus.push("last light"); }
+  else if(nr <= 150 || ns <= 150) s += 8;
+  else                        { s -= 12; minus.push("mid-morning lull"); }
+
+  if(temp <= 35)      { s += 14; plus.push(temp + "°"); }
+  else if(temp <= 50) { s += 8; }
+  else if(temp >= 70) { s -= 14; minus.push(temp + "°, too warm to move"); }
+
+  if(mph === null){}
+  else if(mph <= 1)  { s -= 10; minus.push("dead calm — your scent sits and they hear every step"); }
+  else if(mph <= 10) { s += 10; plus.push(mph + " mph steady"); }
+  else if(mph <= 15) { s -= 2;  minus.push(mph + " mph, getting busy"); }
+  else               { s -= 16; minus.push(mph + " mph — too much, they bed"); }
+
+  const suits = d8 && idx[d8] ? idx[d8] : null;
+  if(suits){ s += 16; plus.push(d8 + " suits " + suits.join(" and ")); }
+  else if(d8){ s -= 8; minus.push(d8 + " fits none of your stands"); }
+
+  if(/thunder|heavy rain/.test(sky))      { s -= 25; minus.push("storm"); }
+  else if(/rain|shower/.test(sky))        { s -= 6;  minus.push("wet"); }
+  else if(/cloud|overcast/.test(sky))     { s += 6;  plus.push("overcast"); }
+
+  return {score:Math.max(0, Math.min(100, Math.round(s))), plus, minus, t, mph, d8};
+}
+
+/* ---------- briefing / forecast for Claude ---------- */
+async function buildBriefing(mode){
+  mode = mode === "forecast" ? "forecast" : "current";
   const c = D.center || worldToLL(D.w/2, D.h/2);
   const now = new Date();
-  const sun = sunTimes(now, c[1], c[0]);
-  const mn = moonInfo(now);
   const wx = await getWeather();
   const L = [];
-  L.push("HUNT BRIEFING — " + (D.name || "property"));
-  L.push("Date: " + now.toLocaleDateString() + " " + hhmm(now));
-  L.push("Location: " + fmtLL(c[0], c[1]) + (D.relief_ft ? "  |  relief " + D.relief_ft[0] + "–" + D.relief_ft[1] + " ft" : ""));
-  L.push("Light: dawn " + hhmm(sun.dawn) + ", sunrise " + hhmm(sun.sunrise) +
-         ", sunset " + hhmm(sun.sunset) + ", dusk " + hhmm(sun.dusk));
-  L.push("Moon: " + mn.name + ", " + Math.round(mn.illum*100) + "% lit, day " + mn.age.toFixed(1) + " of cycle");
-  if(wx){
-    const age = Math.round((Date.now()-wx.at)/60000);
-    const calm = p => (!p.dir || /^0\s*mph/.test(p.wind || "")) ? "calm" : p.dir + " " + p.wind;
-    L.push("Weather (NWS, " + (age < 2 ? "just now" : age + " min old") + "): " +
-           wx.now.temp + "°" + wx.now.unit + ", wind " + calm(wx.now) + ", " + wx.now.sky +
-           (wx.press ? ", pressure " + wx.press + " inHg" : ""));
-    /* only the hours you will actually be sitting: rows past dark are noise */
-    const endMs = (sun.sunset ? sun.sunset.getTime() : now.getTime()) + 30*60000;
-    const rows = wx.next.filter(p => {
-      const t = new Date(p.t).getTime();
-      return t >= now.getTime() - 36e5 && t <= endMs + 36e5;
-    }).slice(0, 8);
-    if(rows.length){
-      L.push("Through last light: " +
-        rows.map(p => new Date(p.t).getHours() + "h " + calm(p) + " " + p.temp + "°").join("; "));
-      const t0 = rows[0].temp, t1 = rows[rows.length-1].temp;
-      L.push("Temp trend over the sit: " + t0 + "° → " + t1 + "° (" +
-             (t1 - t0 >= 0 ? "+" : "") + (t1 - t0) + "°). " +
-             (t1 - t0 <= -6 ? "A falling temp like that is what moves them."
-                            : t1 - t0 >= 3 ? "Rising — expect them late."
-                                           : "Flat, which is the least helpful kind of evening."));
+  const calm = p => (!p.dir || /^0\s*mph/.test(p.wind || "")) ? "calm" : p.dir + " " + p.wind;
+
+  L.push("HUNT " + (mode === "forecast" ? "FORECAST" : "BRIEFING") + " — " + (D.name || "property"));
+  L.push("Pulled: " + now.toLocaleDateString() + " " + hhmm(now));
+  L.push("Location: " + fmtLL(c[0], c[1]) +
+         (D.relief_ft ? "  |  relief " + D.relief_ft[0] + "–" + D.relief_ft[1] + " ft" : ""));
+  L.push("");
+  for(const s of seasonLines(now)) L.push(s);
+  L.push("");
+
+  if(mode === "forecast"){
+    const win = nextWindow(now, c[1], c[0]);
+    const ll = legalLight(win.sun);
+    const mn = moonInfo(win.day);
+    L.push("FORECAST — " + win.label.toUpperCase() + ", " +
+           win.day.toLocaleDateString(undefined, {weekday:"long", month:"short", day:"numeric"}));
+    L.push("Sitting window: " + hhmm(win.from) + " to " + hhmm(win.to));
+    L.push("Legal light that day: " + hhmm(ll.on) + " to " + hhmm(ll.off) +
+           " (30 min either side of the sun — confirm against this year's regs)");
+    L.push("Moon: " + mn.name + ", " + Math.round(mn.illum*100) + "% lit, day " + mn.age.toFixed(1) + " of cycle");
+
+    if(!wx){
+      L.push("");
+      L.push("Weather: unavailable — no signal and nothing cached. Everything above is still good; fill the weather in yourself.");
+    }else{
+      const age = Math.round((Date.now() - wx.at) / 60000);
+      L.push("Forecast age: " + (age < 2 ? "just fetched" : age + " min old") + " (NWS gridpoint)");
+      if(wx.press){
+        const tr = pressureTrend(wx);
+        L.push("Pressure: " + wx.press + " inHg" + (tr ? ", " + tr : ", no trend yet — needs a second reading hours apart") +
+               ". Station reading, not a grid value, so this one is measured.");
+      }
+      const idx = standWindIndex();
+      const slack = 36e5;
+      const rows = (wx.next || []).filter(p => {
+        const t = new Date(p.t).getTime();
+        return t >= win.from.getTime() - slack && t <= win.to.getTime();
+      });
+      if(!rows.length){
+        L.push("");
+        L.push("No hourly rows cover that window yet — the cached forecast does not reach it. Pull again closer to the day.");
+      }else{
+        const scored = rows.map(p => ({p, s:scoreHour(p, win, idx)}));
+        const best = scored.slice().sort((a, b) => b.s.score - a.s.score).slice(0, 3);
+        L.push("");
+        L.push("BEST HOURS IN THAT WINDOW");
+        let rank = 1;
+        for(const b of best){
+          const good = b.s.plus.length ? b.s.plus.join(", ") : "nothing much going for it";
+          const bad  = b.s.minus.length ? "   but: " + b.s.minus.join(", ") : "";
+          L.push("  " + rank++ + ". " + hhmm(b.s.t) + "  — " + b.s.score + "/100 — " + good + bad);
+        }
+        L.push("");
+        L.push("FULL HOURLY");
+        for(const {p, s} of scored)
+          L.push("  " + hhmm(s.t).padStart(8) + "  " + (p.temp + "°").padStart(5) + "  " +
+                 calm(p).padEnd(14) + "  " + (p.sky || "") + "   [" + s.score + "]");
+        const t0 = rows[0].temp, t1 = rows[rows.length-1].temp;
+        L.push("");
+        L.push("Temp across the window: " + t0 + "° → " + t1 + "° (" +
+               (t1 - t0 >= 0 ? "+" : "") + (t1 - t0) + "°). " +
+               (t1 - t0 <= -6 ? "A drop like that is what moves them."
+                              : t1 - t0 >= 3 ? "Rising — expect them late or not at all."
+                                             : "Flat, which is the least helpful kind of sit."));
+        L.push("Reminder on the wind: these are gridpoint numbers, roughly 2.5 km square. " +
+               "On 120 acres of timber the wind at your stand will swirl off this. Trust it for direction, not for gospel.");
+      }
     }
-  } else L.push("Weather: unavailable offline — add it yourself if you have it.");
-  if(sun.sunrise && sun.sunset)
-    L.push("Legal light (AL: 30 min either side of the sun): " +
-           hhmm(new Date(sun.sunrise.getTime() - 30*60000)) + " to " +
-           hhmm(new Date(sun.sunset.getTime() + 30*60000)) + " — confirm against this year's regs.");
+  }else{
+    const sun = sunTimes(now, c[1], c[0]);
+    const ll = legalLight(sun);
+    const mn = moonInfo(now);
+    L.push("RIGHT NOW");
+    L.push("Light: dawn " + hhmm(sun.dawn) + ", sunrise " + hhmm(sun.sunrise) +
+           ", sunset " + hhmm(sun.sunset) + ", dusk " + hhmm(sun.dusk));
+    L.push("Moon: " + mn.name + ", " + Math.round(mn.illum*100) + "% lit, day " + mn.age.toFixed(1) + " of cycle");
+    if(ll.on && ll.off)
+      L.push("Legal light (AL: 30 min either side of the sun): " + hhmm(ll.on) + " to " + hhmm(ll.off) +
+             " — confirm against this year's regs.");
+    if(wx){
+      const age = Math.round((Date.now() - wx.at) / 60000);
+      L.push("Weather (NWS, " + (age < 2 ? "just now" : age + " min old") + "): " +
+             wx.now.temp + "°" + wx.now.unit + ", wind " + calm(wx.now) + ", " + wx.now.sky +
+             (wx.press ? ", pressure " + wx.press + " inHg" : ""));
+      if(wx.press){
+        const tr = pressureTrend(wx);
+        if(tr) L.push("Pressure trend: " + tr + ".");
+      }
+      const endMs = (sun.sunset ? sun.sunset.getTime() : now.getTime()) + 30*60000;
+      const rows = (wx.next || []).filter(p => {
+        const t = new Date(p.t).getTime();
+        return t >= now.getTime() - 36e5 && t <= endMs + 36e5;
+      }).slice(0, 8);
+      if(rows.length){
+        L.push("Through last light: " +
+          rows.map(p => new Date(p.t).getHours() + "h " + calm(p) + " " + p.temp + "°").join("; "));
+        const t0 = rows[0].temp, t1 = rows[rows.length-1].temp;
+        L.push("Temp trend over the sit: " + t0 + "° → " + t1 + "° (" +
+               (t1 - t0 >= 0 ? "+" : "") + (t1 - t0) + "°). " +
+               (t1 - t0 <= -6 ? "A falling temp like that is what moves them."
+                              : t1 - t0 >= 3 ? "Rising — expect them late."
+                                             : "Flat, which is the least helpful kind of evening."));
+      }
+    }else L.push("Weather: unavailable offline — add it yourself if you have it.");
+  }
+
   L.push("");
   L.push("STANDS AND BLINDS");
-  const stands = pins.filter(p => p.t === "stand");
+  const stands = pins.filter(p => p.t === "stand" || p.t === "blind");
   if(!stands.length) L.push("  (none marked yet)");
   for(const p of stands)
     L.push("  • " + (p.name || "unnamed") + " @ " + fmtLL(...worldToLL(p.x, p.y)) +
            (p.winds && p.winds.length ? "  huntable on: " + p.winds.join(",") : "  (no wind notes)") +
            (p.note ? "  — " + p.note : ""));
+  /* Terrain features are permanent facts about the ground, not things you saw on
+     a date. Mixed into the sightings list they sorted to the top on an empty date
+     and buried the actual sign, which is the opposite of useful. */
+  const terrain = pins.filter(p => p.t === "terrain");
+  if(terrain.length){
+    L.push("");
+    L.push("TERRAIN (standing features of the land, not sightings)");
+    for(const p of terrain)
+      L.push("  • " + (p.name || "unnamed") + " @ " + fmtLL(...worldToLL(p.x, p.y)) +
+             (p.note ? " — " + p.note : ""));
+  }
   L.push("");
   L.push("SIGN AND SIGHTINGS (newest first)");
-  const obs = pins.filter(p => p.t !== "stand")
-    .sort((a,b) => (b.when || "").localeCompare(a.when || "")).slice(0, 60);
+  const obs = pins.filter(p => p.t !== "stand" && p.t !== "blind" && p.t !== "terrain")
+    .sort((a, b) => (b.when || "").localeCompare(a.when || "")).slice(0, 60);
   if(!obs.length) L.push("  (none marked yet)");
   for(const p of obs){
     const bits = [(PINS[p.t] || PINS.note).label];
@@ -1277,43 +1581,45 @@ async function buildBriefing(){
     if(typeof p.dir === "number") bits.push("moving " + degToCompass(p.dir) + " (" + p.dir + "°)");
     bits.push("@ " + fmtLL(...worldToLL(p.x, p.y)));
     if(p.acc) bits.push(fmtAcc(p.acc));
-    if(p.note) bits.push("— " + p.note);
-    L.push("  • " + bits.join(", "));
+    L.push("  • " + bits.join(", ") + (p.note ? " — " + p.note : ""));
   }
   L.push("");
   L.push("TRAILS AND LINES (" + trails.length + " lines, " +
-         fmtDist(trails.reduce((s,t) => s+lenOf(t.p), 0)) + " total)");
-  const ranked = trails.map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L);
-  for(const {t, L2} of ranked.slice(0, 14).map(o => ({t:o.t, L2:o.L})))
-    L.push("  • " + (t.name || "unnamed") + " (" + (KINDS[t.kind] || KINDS.trail).label +
-           ", " + fmtDist(L2) + ")" +
-           (t.kind === "route" && (t.stands || []).length
-             ? "  [approach to " + t.stands.map(id => {
+         fmtDist(trails.reduce((s, t) => s + lenOf(t.p), 0)) + " total)");
+  const ranked = trails.map(t => ({t, L:lenOf(t.p)})).sort((a, b) => b.L - a.L);
+  for(const o of ranked.slice(0, 14))
+    L.push("  • " + (o.t.name || "unnamed") + " (" + (KINDS[o.t.kind] || KINDS.trail).label +
+           ", " + fmtDist(o.L) + ")" +
+           (o.t.kind === "route" && (o.t.stands || []).length
+             ? "  [approach to " + o.t.stands.map(id => {
                  const p = pins.find(x => x.id === id); return p ? (p.name || "a stand") : "?";
                }).join(", ") + "]" : ""));
-  if(ranked.length > 14) L.push("  • …and " + (ranked.length-14) + " shorter lines");
+  if(ranked.length > 14) L.push("  • …and " + (ranked.length - 14) + " shorter lines");
   L.push("");
   L.push("SIT LOG (what each stand has actually produced this season)");
   const season = inSeason(sits);
   if(!season.length) L.push("  (no sits logged yet — so stand rankings below are guesswork)");
   const byStand = [...new Set(season.map(s => s.stand).filter(Boolean))]
     .map(id => ({id, p:pins.find(x => x.id === id), st:standStats(id)}))
-    .sort((a,b) => b.st.per - a.st.per);
-  for(const {p, st} of byStand)
-    L.push("  • " + (p ? (p.name || "unnamed stand") : "deleted stand") + ": " +
-           st.sits + (st.sits === 1 ? " sit" : " sits") + ", " + st.deer + " deer, " +
-           st.per.toFixed(1) + " per sit, last sat " + st.days + "d ago" +
-           (st.hot ? "  [PRESSURED — sat " + st.sits + "x recently]" : ""));
+    .sort((a, b) => b.st.per - a.st.per);
+  for(const o of byStand)
+    L.push("  • " + (o.p ? (o.p.name || "unnamed stand") : "deleted stand") + ": " +
+           o.st.sits + (o.st.sits === 1 ? " sit" : " sits") + ", " + o.st.deer + " deer, " +
+           o.st.per.toFixed(1) + " per sit, last sat " + o.st.days + "d ago" +
+           (o.st.hot ? "  [PRESSURED — sat " + o.st.sits + "x recently]" : ""));
   for(const s of season.slice(0, 10))
-    L.push("    - " + s.date + " " + (s.standName || "?") + " " + (s.in||"") + "-" + (s.out||"") +
-           ", " + (s.seen||0) + " deer" + (s.wind ? ", wind " + s.wind + " " + s.windSpeed : "") +
+    L.push("    - " + s.date + " " + (s.standName || "?") + " " + (s.in || "") + "-" + (s.out || "") +
+           ", " + (s.seen || 0) + " deer" + (s.wind ? ", wind " + s.wind + " " + s.windSpeed : "") +
            (s.temp !== null && s.temp !== undefined ? ", " + s.temp + "°" : "") +
            (s.note ? " — " + s.note : ""));
   if(sitOpen) L.push("  (a sit is open right now at " + (sitOpen.standName || "an unset stand") + ")");
 
   L.push("");
-  L.push("Question: given the wind, light and what I've been seeing, where should I sit " +
-         "this evening and in the morning, and how should I get in without blowing it out?");
+  L.push(mode === "forecast"
+    ? "Question: for that window, which stand, which hours, and how do I get in without blowing it out? " +
+      "Weigh the sit log against the wind — a stand that has produced is worth less on a wind it cannot hold."
+    : "Question: given the wind, light and what I've been seeing, where should I sit " +
+      "this evening and in the morning, and how should I get in without blowing it out?");
   return L.join("\n");
 }
 
@@ -1490,14 +1796,23 @@ let exportName = "hunt-map.geojson";
 function showExport(title, hint, text, filename){
   document.getElementById("exporttitle").textContent = title;
   document.getElementById("exporthint").textContent = hint;
-  document.getElementById("exporttext").value = text;
+  const ta = document.getElementById("exporttext");
+  ta.value = text;
+  /* Always open at the top. The season banner is the first thing on a report
+     and the browser otherwise keeps the scroll position from the last one. */
+  ta.scrollTop = 0;
   exportName = filename;
   document.getElementById("sharefile").hidden = !(navigator.canShare && navigator.canShare({files:[new File(["x"], "a.txt", {type:"text/plain"})]}));
-  edlg.showModal();
+  /* Only the hunt report shows the Now / Next sit switch. Everything else that
+     borrows this dialog — backup, GeoJSON — gets it hidden again. */
+  document.getElementById("reportmode").hidden = true;
+  /* Re-rendering the report in place must not call showModal on an open dialog;
+     that throws. */
+  if(!edlg.open) edlg.showModal();
 }
 function backupBlob(){
   return {format:"huntmap-state/1", savedAt:new Date().toISOString(),
-          map:(D && D.name) || "", trails, pins, sits, sitOpen, nudge};
+          map:(D && D.name) || "", trails, pins, sits, sitOpen, nudge, seedDone};
 }
 document.getElementById("backupbtn").onclick = () =>
   showExport("Backup", "Everything exactly as it is here. Send it to your other device and use Import to restore it.",
@@ -1505,10 +1820,25 @@ document.getElementById("backupbtn").onclick = () =>
 document.getElementById("exportbtn").onclick = () =>
   showExport("Export GeoJSON", "Everything on the map as lat/long. Opens in onX, HuntStand, BaseCamp or QGIS.",
              JSON.stringify(geojson(), null, 1), "hunt-map.geojson");
-document.getElementById("briefbtn").onclick = async () => {
-  const txt = await buildBriefing();
-  showExport("Hunt briefing", "Copy this and paste it to Claude on your phone.", txt, "hunt-briefing.txt");
-};
+/* The report has two modes and you can flip between them without leaving the
+   dialog, which beats a chooser you have to answer before you have seen anything. */
+let reportMode = "current";
+async function showReport(mode){
+  reportMode = mode === "forecast" ? "forecast" : "current";
+  const fc = reportMode === "forecast";
+  const txt = await buildBriefing(reportMode);
+  showExport("Hunt report",
+    fc ? "Conditions for your next sit. Copy this and paste it to Claude."
+       : "Conditions right now. Copy this and paste it to Claude.",
+    txt, fc ? "hunt-forecast.txt" : "hunt-briefing.txt");
+  const row = document.getElementById("reportmode");
+  row.hidden = false;
+  document.getElementById("rm-now").setAttribute("aria-pressed", String(!fc));
+  document.getElementById("rm-next").setAttribute("aria-pressed", String(fc));
+}
+document.getElementById("briefbtn").onclick = () => showReport("current");
+document.getElementById("rm-now").onclick  = () => showReport("current");
+document.getElementById("rm-next").onclick = () => showReport("forecast");
 document.getElementById("copytext").onclick = async () => {
   const ta = document.getElementById("exporttext");
   try{ await navigator.clipboard.writeText(ta.value); toast("Copied."); }
@@ -2041,7 +2371,7 @@ function syncList(){
     const nm = el("span", {class:"nm", title:"Double-tap to rename"},
       [t.name || ("Unnamed · " + (KINDS[t.kind] || KINDS.trail).label.toLowerCase())]);
     if(!t.name) nm.style.opacity = ".6";
-    const ln = el("span", {class:"ln"}, [Math.round(L) + "m"]);
+    const ln = el("span", {class:"ln"}, [fmtDist(L)]);
     const x = el("button", {class:"x", type:"button", title:"Delete this line"}, ["×"]);
     x.onclick = ev => {
       ev.stopPropagation(); push();
@@ -2221,13 +2551,60 @@ async function doSave(){
   if(saving) return;
   saving = true;
   try{
-    await DB.set("state", {v:2, trails, pins, sits, sitOpen, nudge, at:new Date().toISOString()});
+    await DB.set("state", {v:3, trails, pins, sits, sitOpen, nudge, seedDone, at:new Date().toISOString()});
     dirty = false; setSave("saved", "Saved");
   }catch(_){ setSave("local", "Save failed"); }
   finally{
     saving = false;
     if(dirty){ clearTimeout(saveT); saveT = setTimeout(doSave, 700); }
   }
+}
+
+/* ---------- seed data ----------
+   Creeks and terrain features belong to the land, not to a device. They used to
+   ship as side files you imported by hand, which meant importing again on every
+   phone and losing them on a reinstall. Now they ride in with the app, get
+   cached by the service worker, and merge themselves on boot.
+
+   Merging is keyed on a stable id recorded in seedDone, not on whether the
+   feature is currently present. That is the difference between "add what is
+   missing" and "add what you have never been given": if you delete a seed pin it
+   stays deleted, and if you walk a creek and replace a stretch your version is
+   never overwritten. New seed features added in a later build still come in,
+   because their ids are not in the list yet. */
+const SEED_URL = "seed.geojson";
+async function mergeSeed(){
+  if(!D) return;
+  let g;
+  try{
+    const r = await fetch(SEED_URL, {cache:"no-cache"});
+    if(!r.ok) return;
+    g = await r.json();
+  }catch(_){ return; }                     // offline on a first run: try again next boot
+  const done = new Set(seedDone);
+  let nt = 0, np = 0;
+  for(const f of (g.features || [])){
+    const pr = f.properties || {}, gm = f.geometry;
+    if(!gm || !pr.id || done.has(pr.id)) continue;
+    if(gm.type === "LineString" && gm.coordinates.length >= 2){
+      trails.push({id:pr.id, p:gm.coordinates.map(c => llToWorld(c[0], c[1])),
+                   name:pr.name || "", kind:KINDS[pr.type] ? pr.type : "trail", seed:true});
+      nt++;
+    }else if(gm.type === "Point"){
+      const xy = llToWorld(gm.coordinates[0], gm.coordinates[1]);
+      const pin = pinFromProps(xy[0], xy[1], pr);
+      pin.id = pr.id; pin.seed = true;
+      pins.push(pin); np++;
+    }else continue;
+    done.add(pr.id);
+  }
+  if(!nt && !np) return;
+  seedDone = [...done];
+  saveState(); syncList(); renderSits(); draw();
+  const bits = [];
+  if(nt) bits.push(nt + (nt === 1 ? " line" : " lines"));
+  if(np) bits.push(np + (np === 1 ? " pin" : " pins"));
+  toast("Added " + bits.join(" and ") + " that ship with the map.");
 }
 
 /* ---------- boot ---------- */
@@ -2238,6 +2615,7 @@ function startMap(pack, state){
     ({id:t.id || ("t"+i), p:t.p, name:t.name || "", kind:KINDS[t.kind] ? t.kind : "trail"}));
   pins = (state && state.pins) || pack.pins || [];
   sits = (state && state.sits) || [];
+  seedDone = (state && state.seedDone) || [];
   sitOpen = (state && state.sitOpen) || null;
   nudge = (state && state.nudge) || {dx:0, dy:0, rot:0, scl:1};
   document.getElementById("title").textContent = pack.name || "Hunt Map";
@@ -2254,10 +2632,29 @@ async function loadPackFile(file){
   try{
     const pack = JSON.parse(await file.text());
     if(!pack.w || !pack.h || !pack.bbox3857) throw new Error("that isn't a map pack");
+    /* This used to call DB.del("state") unconditionally, which meant handing you
+       an updated basemap also quietly deleted every pin, sit and trail edit on
+       the device. The pack is the ground; state is your work. If the new pack
+       covers the same ground, the work still lines up, so keep it. */
+    const old = await DB.get("pack");
+    const prev = await DB.get("state");
+    const sameGround = !!(old && old.bbox3857 && pack.bbox3857 &&
+      old.bbox3857.every((v, i) => Math.abs(v - pack.bbox3857[i]) < 1));
+    if(!sameGround && prev){
+      const n = (prev.trails || []).length + (prev.pins || []).length;
+      if(n && !confirm("That map covers different ground, so your " + n +
+          " lines and pins would not line up on it and will be cleared.\n\n" +
+          "Back up first if you have not. Carry on?")){
+        toast("Left exactly as it was.");
+        return;
+      }
+    }
     await DB.set("pack", pack);
-    await DB.del("state");
-    startMap(pack, null);
-    toast("Map loaded. It stays on this device.");
+    if(!sameGround) await DB.del("state");
+    startMap(pack, sameGround ? prev : null);
+    await mergeSeed();
+    toast(sameGround ? "Map updated \u2014 your pins and lines are untouched."
+                     : "Map loaded. It stays on this device.");
   }catch(err){ toast("Couldn't read that file: " + err.message); }
 }
 document.getElementById("loadpack").onclick = () => document.getElementById("packin").click();
@@ -2302,7 +2699,7 @@ window.addEventListener("orientationchange", () => setTimeout(() => { resize(); 
   resize();
   try{
     const pack = await DB.get("pack");
-    if(pack) startMap(pack, await DB.get("state"));
+    if(pack){ startMap(pack, await DB.get("state")); await mergeSeed(); }
   }catch(_){}
   if("serviceWorker" in navigator && location.protocol.startsWith("http")){
     try{ await navigator.serviceWorker.register("sw.js"); }catch(_){}
