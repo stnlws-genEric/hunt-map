@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 23;
+const BUILD = 24;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -83,6 +83,24 @@ let tool = "pan", editMode = "move", arrowPushed = false;
    of the canvas with no crosshair shown and no chance to aim — and the toast
    claimed "at the crosshair" when none had been drawn. */
 let placing = null;
+/* Pins are locked by default. On a phone the touch that begins a scroll lands on
+   whatever is under your thumb, and a pin under it used to be picked up and
+   carried along for the ride — silently, and without an undo entry, so you could
+   move a stand twenty yards and never know. Selecting a pin is free; moving one
+   takes either this explicit mode or the Move button in its inspector.
+   Per device, not synced: it is a handling preference, not data. */
+let pinsMovable = false;
+try{ pinsMovable = localStorage.getItem("pinsMovable") === "1"; }catch(_){}
+function setPinsMovable(on){
+  pinsMovable = !!on;
+  try{ localStorage.setItem("pinsMovable", pinsMovable ? "1" : "0"); }catch(_){}
+  const b = document.getElementById("pinlock");
+  if(b){
+    b.setAttribute("aria-pressed", String(pinsMovable));
+    b.textContent = pinsMovable ? "Pins can be dragged — tap to lock" : "Pins are locked";
+  }
+  draw();
+}
 let layers = {aerial:true, cont:true, parcel:true, trail:true, labels:true, pins:true};
 let nudge = {dx:0, dy:0, rot:0, scl:1};
 let draft = null, eraseBox = null, pending = null;
@@ -659,15 +677,18 @@ function syncPlacing(){
     txt += "  ·  " + fmtDist(Math.hypot(w[0]-fw[0], w[1]-fw[1]) * MPP()) + " from you";
   }
   document.getElementById("placecoord").textContent = txt;
+  const mov = placing && placing.what === "movepin";
   const rec = placing && placing.what === "recovery";
   /* "Placing" is a static word in the markup, so a recovery label was reading
      "Placing Marking shot from". Swap the lead word instead of stacking verbs. */
   const lead = document.getElementById("placelead");
-  lead.firstChild.nodeValue = rec ? "Marking " : "Placing ";
+  lead.firstChild.nodeValue = mov ? "Moving " : rec ? "Marking " : "Placing ";
   document.getElementById("placewhat").textContent =
-    rec ? placing.label.toLowerCase()
-        : (PINS[document.getElementById("pintype").value] || PINS.note).label;
-  document.getElementById("placego").textContent = rec ? "Mark here" : "Place here";
+    mov ? placing.label
+        : rec ? placing.label.toLowerCase()
+              : (PINS[document.getElementById("pintype").value] || PINS.note).label;
+  document.getElementById("placego").textContent =
+    mov ? "Move it here" : rec ? "Mark here" : "Place here";
 }
 
 /* ---------- hit tests ---------- */
@@ -913,8 +934,15 @@ cv.addEventListener("pointerdown", e => {
   const hp = hitPin(px, py);
   if(hp){
     selPin = hp.id; selT.clear(); primary = null; anchors = [];
-    drag = {mode:"pin", id:hp.id, ox:wx(px)-hp.x, oy:wy(py)-hp.y, moved:false};
-    syncList(); renderInsp(); draw(); return;
+    syncList(); renderInsp(); draw();
+    if(!pinsMovable){
+      /* Select, then let the gesture pan the map. Your thumb is allowed to land
+         on a pin without consequences. */
+      drag = {mode:"pan", px, py, tx:view.tx, ty:view.ty, moved:false, click:null};
+      return;
+    }
+    drag = {mode:"pin", id:hp.id, ox:wx(px)-hp.x, oy:wy(py)-hp.y, moved:false, pushed:false};
+    return;
   }
   if(tool === "edit"){
     const hv = hitAnyVertex(px, py);
@@ -975,7 +1003,12 @@ function onMove(e){
   }else if(drag.mode === "erase"){ eraseBox.x1 = px; eraseBox.y1 = py; draw(); }
   else if(drag.mode === "pin"){
     const p = pins.find(x => x.id === drag.id);
-    if(p){ p.x = wx(px)-drag.ox; p.y = wy(py)-drag.oy; drag.moved = true; draw(); }
+    if(p){
+      /* One undo entry for the whole drag, taken at the first movement rather
+         than on mouse-down, so merely selecting a pin does not fill the stack. */
+      if(!drag.pushed){ push(); drag.pushed = true; }
+      p.x = wx(px)-drag.ox; p.y = wy(py)-drag.oy; drag.moved = true; draw();
+    }
   }else if(drag.mode === "vertex"){
     const t = getT(drag.id); if(!t) return;
     if(!drag.pushed){ push(); drag.pushed = true; }
@@ -2184,7 +2217,17 @@ function renderPin(box, body){
   const ll = worldToLL(p.x, p.y);
   body.append(el("div", {class:"stat"}, [fmtLL(ll[0], ll[1]) + (p.acc ? "  " + fmtAcc(p.acc) : "") +
       (p.averaged ? "  (" + p.averaged + " fixes averaged)" : "")]),
-    el("div", {class:"row"}, [el("button", {class:"btn sm danger", onclick:opDeleteSel}, ["Delete pin"])]));
+    el("div", {class:"row g2"}, [
+      /* The accurate way to move a pin on a phone: arm the crosshair and pan the
+         map under it, exactly like dropping one. Dragging with a thumb that
+         covers the thing you are aiming at never worked well. */
+      el("button", {class:"btn sm", onclick:() => {
+        placing = {what:"movepin", pinId:p.id, label:p.name || (PINS[p.t] || PINS.note).label};
+        centerOn(p.x, p.y);
+        setTool("mark");
+      }}, ["Move pin"]),
+      el("button", {class:"btn sm danger", onclick:opDeleteSel}, ["Delete pin"])
+    ]));
 }
 
 
@@ -3003,6 +3046,16 @@ document.getElementById("sitbtn").onclick = () => { sitOpen ? endSit() : startSi
 
 document.getElementById("placego").onclick = () => {
   const at = atScreen(...mapCentre());
+  if(placing && placing.what === "movepin"){
+    const p = pins.find(x => x.id === placing.pinId);
+    if(!p){ toast("That pin is gone."); setTool("pan"); return; }
+    push();
+    p.x = at[0]; p.y = at[1];
+    setTool("pan");
+    after("Moved " + (p.name || "the pin") + ".");
+    selPin = p.id; renderInsp();
+    return;
+  }
   if(placing && placing.what === "recovery"){
     const p = pins.find(x => x.id === placing.pinId);
     if(!p){ toast("That pin is gone."); setTool("pan"); return; }
@@ -3052,6 +3105,8 @@ window.addEventListener("orientationchange", () => setTimeout(() => { resize(); 
   renderSync();
   /* Pull anything the other device did while this one was shut. */
   syncNow(false);
+  setPinsMovable(pinsMovable);
+  document.getElementById("pinlock").onclick = () => setPinsMovable(!pinsMovable);
   document.getElementById("syncconnect").onclick = connectSync;
   document.getElementById("syncgo").onclick = () => syncNow(true);
   document.getElementById("syncoff").onclick = disconnectSync;
