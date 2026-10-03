@@ -213,6 +213,16 @@ dl.keys dd{margin:0;color:var(--ink-2)}
 #drawbar .pbwhat{font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; opacity:.75}
 #drawbar .pbcoord{font-size:.74rem; opacity:.85}
 #drawbar .pbrow{display:grid; grid-template-columns:1fr 1.3fr; gap:.4rem}
+#measurebar{
+  position:absolute; left:50%; transform:translateX(-50%); z-index:8;
+  bottom:calc(var(--gpsbar-h, 56px) + 10px + env(safe-area-inset-bottom,0px));
+  background:var(--panel); box-shadow:var(--shadow); border:1px solid var(--line);
+  border-radius:10px; padding:.5rem .6rem; display:grid; gap:.35rem;
+  min-width:min(19rem,92vw); text-align:center;
+}
+#measurebar .pbwhat{font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; opacity:.75}
+#measurebar .pbcoord{font-family:'IBM Plex Mono',monospace; font-size:.78rem}
+#measurebar .pbrow{display:grid; grid-template-columns:1fr 1fr; gap:.4rem}
 
 /* ---------- mobile bottom sheet ----------
    The old panel covered the map, which is the one thing you cannot spare in the
@@ -267,6 +277,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
   }
   #placebar{bottom:calc(var(--sheet-h,108px) + 10px)}
   #drawbar{bottom:calc(var(--sheet-h,108px) + 10px)}
+  #measurebar{bottom:calc(var(--sheet-h,108px) + 10px)}
   #toast{bottom:calc(var(--sheet-h,108px) + 12px)}
   body.placing #toast{bottom:calc(var(--sheet-h,108px) + 118px)}
   /* Both of these belong to the desktop. On a phone the panel is put away with
@@ -321,6 +332,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
           <div class="row g2" id="tools">
             <button class="btn" data-tool="pan" aria-pressed="true">Pan</button>
             <button class="btn" data-tool="mark">Drop pin</button>
+            <button class="btn" data-tool="measure">Measure</button>
             <button class="btn sm" id="pinlock" aria-pressed="false" style="grid-column:1/-1">Pins are locked</button>
           </div>
           <details id="advanced">
@@ -466,6 +478,15 @@ dl.keys dd{margin:0;color:var(--ink-2)}
       <span id="updatetext">A newer build is ready.</span>
       <button class="btn sm" id="updatego">Reload</button>
       <button class="btn sm" id="updatelater">Later</button>
+    </div>
+
+    <div id="measurebar" hidden>
+      <div class="pbwhat" id="measurewhat">Measure</div>
+      <div class="pbcoord" id="measuretext">Tap the first point.</div>
+      <div class="pbrow">
+        <button class="btn sm" id="measureclear">Clear</button>
+        <button class="btn sm" id="measuredone">Done</button>
+      </div>
     </div>
 
     <div id="drawbar" hidden>

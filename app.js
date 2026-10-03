@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 33;
+const BUILD = 34;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -91,6 +91,10 @@ let tool = "pan", editMode = "move", arrowPushed = false;
    of the canvas with no crosshair shown and no chance to aim — and the toast
    claimed "at the crosshair" when none had been drawn. */
 let placing = null;
+/* Two points, a distance and a bearing. Deliberately not a chaining tool: the
+   question in the field is almost always "how far is that from this", and a
+   running total is a different question that can wait until it is asked for. */
+let measure = {a:null, b:null};
 /* Pins are locked by default. On a phone the touch that begins a scroll lands on
    whatever is under your thumb, and a pin under it used to be picked up and
    carried along for the ride — silently, and without an undo entry, so you could
@@ -444,6 +448,7 @@ function draw(){
   }
   if(layers.pins) for(const p of pins) if(pinShown(p)) drawPin(p);
   if(fix) drawFix();
+  if(tool === "measure") drawMeasure();
   if(tool === "mark"){ drawCrosshair(); syncPlacing(); }
   if(eraseBox){
     const {x0,y0,x1,y1} = eraseBox;
@@ -940,8 +945,9 @@ cv.addEventListener("pointerdown", e => {
      while drawing at all, and the first finger of a pinch left a stray point
      behind before the second one arrived. Now a still touch is a point, a drag
      is a pan, and a pinch is a zoom that leaves nothing behind. */
-  if(tool === "draw"){
-    drag = {mode:"pan", px, py, tx:view.tx, ty:view.ty, moved:false, click:null, drawTap:true};
+  if(tool === "draw" || tool === "measure"){
+    drag = {mode:"pan", px, py, tx:view.tx, ty:view.ty, moved:false, click:null,
+            drawTap:true, measureTap:tool === "measure"};
     return;
   }
   if(tool === "erase"){ eraseBox = {x0:px, y0:py, x1:px, y1:py, shift:e.shiftKey}; drag = {mode:"erase"}; return; }
@@ -1055,7 +1061,8 @@ function endPtr(e){
         /* Undo the few pixels the map crept while the thumb settled, so the
            point lands where it was aimed rather than where it drifted. */
         view.tx = drag.tx; view.ty = drag.ty;
-        drawTapAt(drag.px, drag.py);
+        if(drag.measureTap) measureTapAt(drag.px, drag.py);
+        else drawTapAt(drag.px, drag.py);
       }
     }else if(drag.mode === "pan" && !drag.moved && drag.click){
       const c = drag.click;
@@ -1138,6 +1145,69 @@ function drawTapAt(px, py){
   }
   draft.pts.push(atScreen(px, py));
   syncDrawing(); draw();
+}
+
+function measureTapAt(px, py){
+  const w = atScreen(px, py);
+  /* A third tap starts over rather than silently replacing an end you cannot
+     tell apart from the other one. */
+  if(measure.a && measure.b) measure = {a:null, b:null};
+  if(!measure.a) measure.a = w; else measure.b = w;
+  syncMeasure(); draw();
+}
+function measureInfo(){
+  if(!measure.a || !measure.b) return null;
+  const dx = measure.b[0]-measure.a[0], dy = measure.b[1]-measure.a[1];
+  const m = Math.hypot(dx, dy) * MPP();
+  /* Canvas y grows downward, so north is -y. */
+  const brg = ((Math.atan2(dx, -dy) * 180/Math.PI) + 360) % 360;
+  return {m, brg};
+}
+function syncMeasure(){
+  const bar = document.getElementById("measurebar");
+  if(!bar) return;
+  const on = tool === "measure";
+  bar.hidden = !on;
+  if(!on) return;
+  const info = measureInfo();
+  document.getElementById("measuretext").textContent =
+    info ? fmtDist(info.m) + "   ·   " + degToCompass(info.brg) + " " + Math.round(info.brg) + "\u00b0"
+    : measure.a ? "Tap the second point."
+    : "Tap the first point.";
+  document.getElementById("measureclear").disabled = !measure.a;
+}
+function drawMeasure(){
+  if(!measure.a) return;
+  const A = nudged(measure.a), B = measure.b ? nudged(measure.b) : null;
+  const ax = sx(A[0]), ay = sy(A[1]);
+  ctx.save();
+  if(B){
+    const bx = sx(B[0]), by = sy(B[1]);
+    for(const pass of [{c:"rgba(10,12,8,.75)", w:5}, {c:"#f2ead8", w:2}]){
+      ctx.strokeStyle = pass.c; ctx.lineWidth = pass.w;
+      ctx.setLineDash(pass.w > 3 ? [] : [7,5]);
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+  for(const q of (B ? [[ax,ay],[sx(B[0]),sy(B[1])]] : [[ax,ay]])){
+    ctx.beginPath(); ctx.arc(q[0], q[1], 5.5, 0, 7);
+    ctx.fillStyle = "#f2ead8"; ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = "rgba(10,12,8,.8)"; ctx.stroke();
+  }
+  const info = measureInfo();
+  if(info && B){
+    const bx = sx(B[0]), by = sy(B[1]);
+    const mx = (ax+bx)/2, my = (ay+by)/2;
+    const label = fmtDist(info.m);
+    ctx.font = "600 13px 'Barlow Condensed',sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    const wdt = ctx.measureText(label).width + 12;
+    ctx.fillStyle = "rgba(10,12,8,.82)";
+    roundRect(mx - wdt/2, my - 11, wdt, 22, 4); ctx.fill();
+    ctx.fillStyle = "#f2ead8"; ctx.fillText(label, mx, my);
+  }
+  ctx.restore();
 }
 
 /* How far a finger may wander and still count as a tap. A thumb on glass is not
@@ -1240,6 +1310,7 @@ const HINTS = {
   edit:"Tap a line to pick it up. Drag its points; tap two points to mark a stretch.",
   draw:"Tap to drop a point, drag to move the map, pinch to zoom. Press Finish line when done. Start on a loose end to extend that line.",
   erase:"Drag a box over what isn't trail. Shift deletes whole lines.",
+  measure:"Tap two points. Drag to move the map, pinch to zoom. Nothing is saved.",
   mark:"Move the map so the crosshair sits where the pin goes, then press Place here. Mark here drops one at your GPS fix instead."
 };
 function setTool(t, keepDraft){
@@ -1249,9 +1320,9 @@ function setTool(t, keepDraft){
   document.querySelectorAll("#tools .btn, #tools2 .btn").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.tool === t)));
   document.getElementById("toolhint").textContent = HINTS[t];
   if(t !== "edit") editMode = "move";
-  cv.classList.toggle("cross", t === "draw" || t === "mark" || t === "erase" || (t === "edit" && editMode !== "move"));
+  cv.classList.toggle("cross", t === "draw" || t === "mark" || t === "erase" || t === "measure" || (t === "edit" && editMode !== "move"));
   if(t !== "draw" && !keepDraft) draft = null;
-  syncPlacing(); syncDrawing(); renderInsp(); draw();
+  syncPlacing(); syncDrawing(); syncMeasure(); renderInsp(); draw();
 }
 
 /* ---------- pins ---------- */
@@ -3665,6 +3736,8 @@ document.getElementById("placecancel").onclick = () => setTool("pan");
 document.getElementById("drawdone").onclick = finishDraw;
 document.getElementById("drawcancel").onclick = () => { draft = null; setTool("pan"); };
 document.getElementById("drawkind").onchange = e => setDrawKind(e.target.value);
+document.getElementById("measureclear").onclick = () => { measure = {a:null, b:null}; syncMeasure(); draw(); };
+document.getElementById("measuredone").onclick = () => { measure = {a:null, b:null}; setTool("pan"); };
 
 document.getElementById("startblank").onclick = async () => {
   const blank = {name:"Blank map", mpp:1, w:2000, h:2000,
