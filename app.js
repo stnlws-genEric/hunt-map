@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 34;
+const BUILD = 35;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -499,12 +499,13 @@ function drawPin(p){
   let g = GLYPH[spec.glyph] || GLYPH.note;
   ctx.save(); ctx.translate(x0, y0);
   paintGlyph(g, S, CHIP_INK);
-  // a buck carries the rack; a doe does not, and the count rides on the badge
-  if(p.t === "kill" && p.sex !== "doe")
-    paintGlyph({s:RACK, sw:1.25}, S, CHIP_INK);
   ctx.restore();
 
-  if(p.t === "kill" && p.sex !== "doe" && p.points){
+  /* The kill mark is a red X for both sexes. The badge is what separates them:
+     a buck carries one, a doe does not. With a point count it shows the number;
+     without one it is still a badge, because "a buck" is the fact worth seeing
+     from across the map even before you remember how many points it had. */
+  if(p.t === "kill" && p.sex !== "doe"){
     const bs = Math.max(S*.46, 11), bx = X + S/2 - bs*.36, by = Y + S/2 - bs*.36;
     ctx.beginPath(); ctx.arc(bx, by, bs/2, 0, 7);
     ctx.fillStyle = spec.color; ctx.fill();
@@ -512,7 +513,7 @@ function drawPin(p){
     ctx.fillStyle = CHIP_BONE;
     ctx.font = "700 " + Math.round(bs*.66) + "px 'Barlow Condensed',sans-serif";
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(String(p.points), bx, by + bs*.04);
+    ctx.fillText(p.points ? String(p.points) : "\u2022", bx, by + bs*.04);
   }
 
   if(p.name && view.k > .5){
@@ -595,78 +596,101 @@ function updateScale(){
 
 
 /* ---------- pin glyphs ----------
-   Set D, the bone chip: an ink glyph on a bone rounded square with a kind-coloured
-   border. Geometry is on a 24x24 grid, drawn through Path2D with the same SVG path
-   data the icon sheet was designed with, so the map and the sheet never drift apart.
-   `sw` overrides the stroke width: filled shapes need a hair stroke or they blob and
-   fine detail (the hoof cleft, the skull sockets) closes up.                        */
+   Rebuilt in build 35. The old set was line-art pictograms that read as app
+   stickers rather than field marks, and several of them were ambiguous at the
+   22px they are actually drawn at.
+
+   The system now: filled geometry for anything man-made or conceptual, and the
+   hoof kept for deer sign, because nothing geometric says "a deer stood here"
+   and losing that costs more than consistency is worth. Meaning rides on three
+   channels — the chip's border colour for category, the glyph for the thing,
+   and a badge for a count.
+
+   Every mark here was compared against the others at 22px before it shipped.
+   The ones that changed late did so because they collided: a filled triangle
+   stand could not be told from a terrain peak, and a cross for a rub read as a
+   dagger. */
 const HOOF_L = "M11.1 3.4C9.3 5.3 6.2 8.7 5.1 12.1c-1 3.2.7 5.6 3.2 5.6 1.9 0 2.9-1 2.95-2.8.05-3.8.05-8.2-.15-11.5z";
 const HOOF_R = "M12.9 3.4c1.8 1.9 4.9 5.3 6 8.7 1 3.2-.7 5.6-3.2 5.6-1.9 0-2.9-1-2.95-2.8-.05-3.8-.05-8.2.15-11.5z";
-const hoofAt = (tx, ty, k) => ({f:[HOOF_L, HOOF_R], sw:.5, tf:[tx, ty, k]});
+const hoofAt = (tx, ty, k) => ({f:[HOOF_L, HOOF_R], sw:.4, tf:[tx, ty, k]});
 
 const GLYPH = {
-  stand:  {s:["M8.6 21.2 9.9 4","M15.4 21.2 14.1 4","M9.55 7.6h4.9","M9.1 13h5.8","M8.75 18.4h6.5"]},
-  blind:  {s:["M6.2 7.8h11.6v6.4H6.2z","M4.2 7.8 12 3.4l7.8 4.4","M9 10.9h6",
-              "M7.8 14.2 6 21.6M16.2 14.2l1.8 7.4"]},
-  cam:    {s:["M5.2 8h13.6v11.4H5.2z","M8.4 8V5.2h7.2V8","M8.4 11h-1.4"],
-           c:[[12,13.7,3.2]]},
-  oncam:  {s:["M4.4 8.8V4.4h4.4M19.6 8.8V4.4h-4.4M4.4 15.2v4.4h4.4M19.6 15.2v4.4h-4.4"],
-           g:[hoofAt(12,12,.5)]},
-  track:  {f:[HOOF_L,HOOF_R], sw:.5,
-           e:[[7.8,20.9,1.45,2.05,20],[16.2,20.9,1.45,2.05,-20]]},
-  scrape: {g:[hoofAt(12,9.2,.62)],
-           s:["M7.2 17.6 9.5 19.4M10.8 16.8l2.5 1.8M14.8 17.8l2.2 1.6M8.9 21l2.3 1.4M13.3 20.8l2.3 1.4"]},
-  rub:    {s:["M10.3 3.2c-1 5.7-1.4 11.7-1.3 18.2h6c.1-6.5-.3-12.5-1.3-18.2z","M6.4 21.4h11.2"],
-           f:["M11.9 8.4c-1.3 1.5-1.5 5.8-.4 8 1-2.4 1.1-5.6.4-8z"], sw:.5},
-  drop:   {g:[hoofAt(12,9,.6)], sw:.5,
-           e:[[7.9,19.4,1.6,1.15,-20],[12.1,21.6,1.6,1.15,8],[16.1,19.2,1.6,1.15,22]]},
-  urine:  {g:[hoofAt(12,8.8,.6)], sw:.5,
-           f:["M12 16.2c-1.1 1.6-1.5 2.7-.9 3.5.5.6 1.3.6 1.8 0 .6-.8.2-1.9-.9-3.5z"]},
-  bed:    {s:["M7.2 13c2-1.4 4.8-1.4 6.8 0M9 16.4c1.8-1.2 4.2-1.2 6 0"],
-           eo:[[12,13.8,7.8,5,0]]},
-  feeder: {s:["M7.9 3.8h8.2v8.4H7.9z","M7.9 12.2 12 17.4l4.1-5.2","M10 18.6 7.6 22.2M14 18.6l2.4 3.6"]},
-  food:   {s:["M4.4 6.6h15.2v10.8H4.4z","M7.6 9.6v4.8M12 9.6v4.8M16.4 9.6v4.8"]},
-  water:  {s:["M3.6 8.6c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0","M3.6 14c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0",
-              "M3.6 19.4c2.8-2.7 5.6-2.7 8.4 0s5.6 2.7 8.4 0"]},
-  sight:  {s:["M10.3 12.4h3.4","M6 11.4V7.7h4.3v3.7M18 11.4V7.7h-4.3v3.7"],
-           c:[[7.8,15.2,4.4],[16.2,15.2,4.4]]},
-  kill:   {s:["M12 5.4c-2.4 0-4.2 1.8-4.35 4.4-.15 2 .2 3.4 1.2 4.5.9 1 1.35 2.2 1.45 3.9l.15 2.2c.05.9.45 1.45 1.55 1.45s1.5-.55 1.55-1.45l.15-2.2c.1-1.7.55-2.9 1.45-3.9 1-1.1 1.35-2.5 1.2-4.5C16.2 7.2 14.4 5.4 12 5.4z"],
-           sw:1.25,
-           e:[[10,11.4,1.35,1.05,-25],[14,11.4,1.35,1.05,25]],
-           f:["M12 17.2c-.55 1.3-.7 2.6-.35 3.2.3.5.8.5 1.1 0 .35-.6.2-1.9-.35-3.2z"]},
-  note:   {s:["M12 4.4v12.4","M8.6 13.4 12 16.8l3.4-3.4"], c:[[12,20.4,1.1]]},
-  move:   {s:["M12 21.4V4.6","M7.2 9.4 12 4.4l4.8 5"]},
-  terrain:{s:["M2.8 16.4c3.4-4 6.2-4 9.2 0s5.8 4 9.2 0",
-              "M5.4 20.2c2.4-2.8 4.4-2.8 6.6 0s4.2 2.8 6.6 0",
-              "M12 11.6 9.2 7.2h5.6z"]}
+  /* a platform up a ladder. Outline top so it does not fuse with the rungs at
+     thumb size, which a filled one did. */
+  stand:  {s:["M5.6 3.9h12.8v5.3H5.6z", "M9.2 9.2v12", "M14.8 9.2v12",
+              "M9.2 12.8h5.6", "M9.2 16.2h5.6", "M9.2 19.6h5.6"], sw:1.7},
+  /* an enclosed box with the shooting slot cut out of it */
+  blind:  {f:["M5.4 7.8h13.2v11H5.4zM8.2 11.6h7.6v2.8H8.2z"], sw:.4, fr:"evenodd"},
+  /* body with the lens knocked out, so it is not just a filled rectangle */
+  cam:    {f:["M5.2 9h13.6v9.6H5.2zM12 10.9a2.9 2.9 0 100 5.8 2.9 2.9 0 000-5.8z"],
+           sw:.4, fr:"evenodd", s:["M9.2 9V6.6h5.6V9"]},
+  /* the same camera with a hoof inside it: a deer, on a camera */
+  oncam:  {f:["M5.2 9h13.6v9.6H5.2z"], sw:.4, s:["M9.2 9V6.6h5.6V9"],
+           g:[{f:[HOOF_L, HOOF_R], sw:.35, tf:[12,13.8,.42], ink:CHIP_BONE}]},
+  track:  {f:[HOOF_L, HOOF_R], sw:.4,
+           e:[[7.8,20.9,1.4,2,20],[16.2,20.9,1.4,2,-20]]},
+  /* hoof over pawed earth. The geometric attempts at this all read as a
+     lollipop; the picture is the only thing that says scrape. */
+  scrape: {g:[hoofAt(12,8.8,.55)], sw:.4,
+           f:["M6.2 17.2l3.2 2.3-.8 1.2-3.2-2.3zM10.4 16.2l3.2 2.3-.8 1.2-3.2-2.3zM14.6 17l3 2.2-.8 1.2-3-2.2z"]},
+  /* a sapling with the bark rubbed off one side. The earlier straight-sided bar
+     with a centred scar read as a domino; tapering the trunk and pushing the
+     scar off-centre makes it a tree being worked, which is what a rub is. */
+  rub:    {f:["M10 3.4c-.7 5.8-.9 11.9-.6 18h5.2c.3-6.1.1-12.2-.6-18z"], sw:.4,
+           s:["M6.8 21.4h10.4"],
+           g:[{f:["M12.5 7.6c-.5 2.6-.5 5.6 0 8.2.9-2.6.9-5.6 0-8.2z"], sw:.3, ink:CHIP_BONE}]},
+  drop:   {g:[hoofAt(12,8.6,.5)], sw:.4,
+           e:[[8.2,18.4,1.6,1.2,-18],[12,20.4,1.6,1.2,6],[15.8,18.2,1.6,1.2,20]]},
+  /* one droplet, no hoof. With the hoof it was indistinguishable from droppings
+     at map size — two marks for different sign that looked like the same mark. */
+  urine:  {f:["M12 4.6c3.3 4.6 5.5 7.8 5.5 10.3 0 3.1-2.4 5.2-5.5 5.2s-5.5-2.1-5.5-5.2c0-2.5 2.2-5.7 5.5-10.3z"],
+           sw:.4,
+           g:[{f:["M12 9.6c1.6 2.3 2.7 3.9 2.7 5.2 0 1.6-1.2 2.7-2.7 2.7z"], sw:.3, ink:CHIP_BONE}]},
+  bed:    {f:["M12 9c-4 0-7.2 1.8-7.2 4s3.2 4 7.2 4 7.2-1.8 7.2-4-3.2-4-7.2-4z"], sw:.4},
+  feeder: {f:["M12 4.6 19.4 12 12 19.4 4.6 12z"], sw:.4},
+  /* rows in a plot: wider bars than the camera body, and three of them */
+  food:   {f:["M4.8 8h3.4v9H4.8zM10.3 8h3.4v9h-3.4zM15.8 8h3.4v9h-3.4z"], sw:.4},
+  water:  {f:["M4.6 9.2c2.4-2.3 4.6-2.3 7.2 0s4.8 2.3 7.2 0v2.6c-2.4 2.3-4.6 2.3-7.2 0s-4.8-2.3-7.2 0z",
+              "M4.6 14.4c2.4-2.3 4.6-2.3 7.2 0s4.8 2.3 7.2 0V17c-2.4 2.3-4.6 2.3-7.2 0s-4.8-2.3-7.2 0z"], sw:.4},
+  sight:  {c:[[12,12,6]], sw:1.7, e:[[12,12,2.5,2.5,0]]},
+  /* red, and pulled up-left so the points badge in the lower-right corner does
+     not sit on an arm of the X. A doe gets the bare X; a buck gets the badge. */
+  kill:   {s:["M5.6 5.6 16 16","M16 5.6 5.6 16"], sw:3.3, ink:"#AD1F1F"},
+  move:   {f:["M12 4 18.2 11.6h-3.9v8.8h-4.6v-8.8H6.1z"], sw:.4},
+  note:   {s:["M7.6 6h8.8v12H7.6z","M10 9.4h4","M10 12.6h4"], sw:1.6},
+  /* one peak with the ground running under it. An earlier pair of contour
+     humps read, accurately and unhelpfully, as a pair of backsides. */
+  terrain:{f:["M12 4.4 18.2 13.2H5.8z"], sw:.4, ssw:1.7,
+           s:["M3.8 16.8c2-2 3.7-2 5.7 0s3.7 2 5.7 0 3.7-2 5.7 0",
+              "M3.8 20.4c2-2 3.7-2 5.7 0s3.7 2 5.7 0 3.7-2 5.7 0"]}
 };
-/* one rack, drawn once — the point count rides on a badge where it stays readable */
-const RACK = ["M10.4 7.4C9 4.8 6.6 3.2 4 3 2.9 2.95 2.2 2.3 2.3 1.2",
-              "M13.6 7.4c1.4-2.6 3.8-4.2 6.4-4.4 1.1-.05 1.8-.7 1.7-1.8",
-              "M8.9 5.2 8.6 2.4","M15.1 5.2 15.4 2.4",
-              "M7 3.9 6.7 1.1","M17 3.9 17.3 1.1",
-              "M5.2 3.2 4.9 .9","M18.8 3.2 19.1 .9"];
 const PATHC = new Map();
 const pathOf = d => { let p = PATHC.get(d); if(!p){ p = new Path2D(d); PATHC.set(d, p); } return p; };
 
 function paintGlyph(spec, size, ink){
   const k = size/24;
   ctx.save(); ctx.scale(k, k);
-  ctx.lineCap = "round"; ctx.lineJoin = "round";
-  ctx.strokeStyle = ink; ctx.fillStyle = ink;
+  ctx.lineCap = "round"; ctx.lineJoin = "miter"; ctx.miterLimit = 4;
   const base = spec.sw || 1.7;
   const run = (sp, tf) => {
     ctx.save();
     if(tf){ ctx.translate(tf[0], tf[1]); ctx.scale(tf[2], tf[2]); ctx.translate(-12, -12); }
+    /* a sub-spec may paint in its own colour: that is how the hoof knocks out
+       of the camera body and the scar out of the trunk */
+    const col = sp.ink || spec.ink || ink;
+    ctx.strokeStyle = col; ctx.fillStyle = col;
     ctx.lineWidth = sp.sw || base;
-    for(const d of sp.f || []){ const p = pathOf(d); ctx.fill(p); ctx.stroke(p); }
+    for(const d of sp.f || []){ const p = pathOf(d); ctx.fill(p, sp.fr || "nonzero"); ctx.stroke(p); }
+    /* strokes may be heavier than the hairline that tidies a fill */
+    if(sp.ssw) ctx.lineWidth = sp.ssw;
     for(const d of sp.s || []) ctx.stroke(pathOf(d));
+    ctx.lineWidth = sp.sw || base;
     for(const c of sp.c || []){ ctx.beginPath(); ctx.arc(c[0], c[1], c[2], 0, 7); ctx.stroke(); }
-    for(const e of sp.e || []){           // filled: dewclaws, pellets, eye sockets
+    for(const e of sp.e || []){
       ctx.beginPath(); ctx.ellipse(e[0], e[1], e[2], e[3], (e[4]||0)*Math.PI/180, 0, 7);
       ctx.fill(); ctx.stroke();
     }
-    for(const e of sp.eo || []){          // outline: the bed hollow, lens barrels
+    for(const e of sp.eo || []){
       ctx.beginPath(); ctx.ellipse(e[0], e[1], e[2], e[3], (e[4]||0)*Math.PI/180, 0, 7);
       ctx.stroke();
     }
