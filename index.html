@@ -180,11 +180,11 @@ dl.keys dd{margin:0;color:var(--ink-2)}
 @media (max-width:760px){
   .rail{width:calc(100% - 16px);max-height:52%}
   #insp{top:auto;left:8px;right:8px;bottom:52px;width:auto;max-height:46%}
-  /* The readout used to sit top-right on a phone to dodge the sheet, which put
-     it directly under the header and the status bar. It rides above the sheet
-     instead, the same way the place bar and the toast do. */
-  #readout{bottom:calc(var(--sheet-h,108px) + 10px); top:auto; left:8px; right:auto;
-    flex-direction:column; align-items:flex-start}
+  /* Top-right on a phone, out of the way of the sheet. Moved to the bottom in
+     build 31 on a guess that it was crowding the header — it was not, the header
+     strip itself was the problem, and that was the status bar. Steven wants it
+     here, so here it stays. */
+  #readout{bottom:auto;top:8px;right:8px;left:auto;flex-direction:column;align-items:flex-end}
   #compass{display:none}
   .btn{min-height:38px}
   .btn.sm{min-height:32px}
