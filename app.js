@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 40;
+const BUILD = 41;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -96,6 +96,11 @@ let selT = new Set(), primary = null, selPin = null, anchors = [];
    Per selection, not a global toggle, because "only when I click edit" means the
    next line you tap starts locked too. */
 let lineUnlocked = null;
+/* Build 40 put the editing FORM behind a button but left the geometry reachable:
+   the gate on dragging was tool === "edit", and hitAnyVertex searched every line
+   on the map. So with the edit tool active, any line's points were draggable —
+   locked form, unlocked line. The gate belongs on the lock, not the tool. */
+const canShape = id => lineUnlocked !== null && id === lineUnlocked;
 let tool = "pan", editMode = "move", arrowPushed = false;
 /* What the crosshair is currently aiming at. {what:"pin"} drops a new pin of the
    selected type; {what:"recovery", ...} marks where a deer was shot from, hit or
@@ -409,14 +414,14 @@ function draw(){
         ctx.restore();
       }
     }
-    if(tool === "draw" || tool === "edit"){
+    if(tool === "draw" || (tool === "edit" && lineUnlocked)){
       ctx.fillStyle = "rgba(255,255,255,.85)";
       for(const t of trails) for(const q of [t.p[0], t.p[t.p.length-1]]){
         const n = nudged(q);
         ctx.beginPath(); ctx.arc(sx(n[0]), sy(n[1]), 2.6, 0, 7); ctx.fill();
       }
       for(const t of trails){
-        if(!selT.has(t.id) || t.id === primary) continue;
+        if(!selT.has(t.id) || t.id === primary || !canShape(t.id)) continue;
         for(const q of t.p.map(nudged)){
           ctx.beginPath(); ctx.arc(sx(q[0]), sy(q[1]), 3.6, 0, 7);
           ctx.fillStyle = blaze; ctx.fill();
@@ -425,7 +430,7 @@ function draw(){
       }
     }
     const pt = primary && getT(primary);
-    if(pt && tool === "edit"){
+    if(pt && tool === "edit" && canShape(pt.id)){
       const pts = pt.p.map(nudged);
       if(anchors.length === 2){
         const [i,j] = [Math.min(...anchors), Math.max(...anchors)];
@@ -784,6 +789,7 @@ function hitVertex(t, px, py){
 function hitAnyVertex(px, py){
   let best = null, bd = GRAB;
   for(const t of trails){
+    if(!canShape(t.id)) continue;      // a locked line has nothing to grab
     const pts = t.p.map(nudged);
     for(let i = 0; i < pts.length; i++){
       const d = Math.hypot(sx(pts[i][0])-px, sy(pts[i][1])-py);
@@ -1017,7 +1023,7 @@ cv.addEventListener("pointerdown", e => {
     drag = {mode:"pin", id:hp.id, ox:wx(px)-hp.x, oy:wy(py)-hp.y, moved:false, pushed:false};
     return;
   }
-  if(tool === "edit"){
+  if(tool === "edit" && lineUnlocked){
     const hv = hitAnyVertex(px, py);
     const t = hv ? hv.t : (primary && getT(primary));
     const vi = hv ? hv.i : -1;
@@ -1033,7 +1039,7 @@ cv.addEventListener("pointerdown", e => {
     }
     if(editMode === "add"){
       const ht2 = hitTrail(px, py);
-      if(ht2){
+      if(ht2 && canShape(ht2.t.id)){
         if(ht2.t.id !== primary) selectTrail(ht2.t.id, false);
         const tt = getT(ht2.t.id);
         push(); tt.p.splice(ht2.i+1, 0, atScreen(px, py));
@@ -1130,7 +1136,7 @@ window.addEventListener("mouseup", e => { if(drag) endPtr(e); });
 cv.addEventListener("dblclick", e => {
   if(!D) return;
   if(tool === "draw") return finishDraw();
-  if(tool === "edit" && primary){
+  if(tool === "edit" && primary && canShape(primary)){
     const t = getT(primary), [dx2, dy2] = evXY(e), ht = hitTrail(dx2, dy2);
     if(t && ht && ht.t.id === t.id){
       push(); t.p.splice(ht.i+1, 0, atScreen(dx2, dy2)); anchors = [ht.i+1];
@@ -2258,7 +2264,13 @@ function renderLineFacts(box, body, t, L){
   }
 
   const edit = el("button", {class:"btn"}, ["Edit this line"]);
-  edit.onclick = () => { lineUnlocked = t.id; renderInsp(); draw(); };
+  edit.onclick = () => {
+    lineUnlocked = t.id;
+    /* Unlocking without switching tools would leave him pressing Edit and still
+       unable to drag anything, which is the same complaint in a new hat. */
+    editMode = "move";
+    if(tool !== "edit") setTool("edit"); else { renderInsp(); draw(); }
+  };
   bits.push(el("div", {class:"sep"}),
             el("div", {class:"row g2"}, [edit]),
             el("div", {class:"hint"}, [
