@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 38;
+const BUILD = 39;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -2885,7 +2885,11 @@ function drawSitSpots(){
 }
 async function whereToSit(){
   if(!D){ toast("Load a map first."); return; }
-  const btn = document.getElementById("sitbtn");
+  /* Not "sitbtn": that id already belongs to Start sit in the Sit log card. Taking
+     it meant getElementById handed THIS button to renderSits, which relabelled it
+     "Start sit", and the later wiring here replaced the real button's click with
+     this one — so the Sit log button looked right and did nothing. */
+  const btn = document.getElementById("findspot");
   if(btn){ btn.disabled = true; btn.textContent = "Working…"; }
   /* Ask for a fresh forecast, but never block on it: offline, the cached wind is
      the honest answer and a stale wind flagged as stale beats no answer at all. */
@@ -2894,7 +2898,7 @@ async function whereToSit(){
   const r = findSits(windDeg);
   sitSpots = r.spots;
   renderSitList(r, windDeg);
-  if(btn){ btn.disabled = false; btn.textContent = "Where to sit"; }
+  if(btn){ btn.disabled = false; btn.textContent = "Best spots now"; }
   draw();
   /* Same rule as selecting a pin: you asked a question, so the answer has to be
      on screen even if you had the panel put away. Bringing the panel up is not
@@ -4070,7 +4074,7 @@ window.addEventListener("orientationchange", () => setTimeout(() => { placeInspe
   placeInspector();
   renderPinKinds();
   renderLineKinds();
-  document.getElementById("sitbtn").onclick   = whereToSit;
+  document.getElementById("findspot").onclick = whereToSit;
   document.getElementById("sitclear").onclick = clearSits;
   document.getElementById("lt-all").onclick  = () => {
     hiddenLines.clear(); saveHiddenLines(); renderLineKinds(); syncList(); draw(); };
