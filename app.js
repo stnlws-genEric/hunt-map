@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 29;
+const BUILD = 30;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -738,10 +738,12 @@ function hitAnyVertex(px, py){
   return best;
 }
 function hitLooseEnd(px, py){
-  for(const t of trails) for(const end of [0,1]){
+  for(const t of trails){
+    if(!lineShown(t)) continue;          // cannot extend what you cannot see
+    for(const end of [0,1]){
     const q = nudged(end ? t.p[t.p.length-1] : t.p[0]);
     if(Math.hypot(sx(q[0])-px, sy(q[1])-py) < GRAB) return {id:t.id, end};
-  }
+  }}
   return null;
 }
 
@@ -1089,15 +1091,44 @@ cv.addEventListener("wheel", e => {
   view.k = nk; draw();
 }, {passive:false});
 
+/* What you are drawing is now chosen before you draw it rather than set
+   afterwards in the inspector. That ordering is what caused the worst bug of the
+   night: starting a deer route near the loose end of a trail silently extended
+   the trail, and then setting the kind in the inspector retyped the WHOLE line —
+   so a remembered route swallowed a real trail. Deer routes naturally start where
+   trails are, because that is where you are walking when you see deer, so this
+   was not an edge case. */
+let drawKind = "trail";
+try{ const k = localStorage.getItem("drawKind"); if(k && KINDS[k]) drawKind = k; }catch(_){}
+function setDrawKind(k){
+  if(!KINDS[k]) return;
+  drawKind = k;
+  try{ localStorage.setItem("drawKind", k); }catch(_){}
+  /* Changing your mind mid-draft may invalidate an extend that was only legal
+     because the kinds matched. */
+  if(draft && draft.extend){
+    const t = getT(draft.extend.id);
+    if(t && (t.kind || "trail") !== drawKind){
+      draft.extend = null;
+      toast("That will be a new line now, not an extension.");
+    }
+  }
+  syncDrawing(); draw();
+}
+
 function drawTapAt(px, py){
   if(!draft) draft = {pts:[], extend:null, redraw:null};
   if(!draft.pts.length && !draft.redraw){
     const le = hitLooseEnd(px, py);
+    /* Only ever extend a line of the same kind. Joining a remembered route onto
+       a walked trail makes one line that cannot be both. */
     if(le){
-      draft.extend = le;
       const t = getT(le.id);
-      draft.pts.push((le.end ? t.p[t.p.length-1] : t.p[0]).slice());
-      toast("Extending that line."); syncDrawing(); draw(); return;
+      if(t && (t.kind || "trail") === drawKind){
+        draft.extend = le;
+        draft.pts.push((le.end ? t.p[t.p.length-1] : t.p[0]).slice());
+        syncDrawing(); draw(); return;
+      }
     }
   }
   draft.pts.push(atScreen(px, py));
@@ -1117,8 +1148,16 @@ function syncDrawing(){
   const n = draft ? draft.pts.length : 0;
   document.getElementById("drawcount").textContent = n + (n === 1 ? " point" : " points");
   document.getElementById("drawdone").disabled = n < 2;
+  const sel = document.getElementById("drawkind");
+  if(sel && sel.options.length !== Object.keys(KINDS).length){
+    sel.textContent = "";
+    for(const k in KINDS) sel.appendChild(el("option", {value:k}, [KINDS[k].label]));
+  }
+  if(sel) sel.value = drawKind;
+  const ext = draft && draft.extend ? getT(draft.extend.id) : null;
   document.getElementById("drawhint").textContent =
-    n === 0 ? "Tap to drop a point. Drag to move the map, pinch to zoom."
+    ext ? "Extending " + (ext.name || "that line") + " \u2014 it stays one line."
+    : n === 0 ? "Tap to drop a point. Drag to move the map, pinch to zoom."
     : n < 2 ? "One more point at least. Drag to move the map."
     : "Keep tapping, or press Finish line.";
 }
@@ -1149,7 +1188,7 @@ function finishDraw(){
     }
     draft = null; setTool("edit"); return after("Line extended.");
   }
-  const t = {id:newId("n"), p:pts.slice(), name:"", kind:"trail"};
+  const t = {id:newId("n"), p:pts.slice(), name:"", kind:drawKind};
   trails.push(t); selT = new Set([t.id]); primary = t.id;
   draft = null; setTool("edit"); after("Trail added.");
 }
@@ -3617,6 +3656,7 @@ document.getElementById("placego").onclick = () => {
 document.getElementById("placecancel").onclick = () => setTool("pan");
 document.getElementById("drawdone").onclick = finishDraw;
 document.getElementById("drawcancel").onclick = () => { draft = null; setTool("pan"); };
+document.getElementById("drawkind").onchange = e => setDrawKind(e.target.value);
 
 document.getElementById("startblank").onclick = async () => {
   const blank = {name:"Blank map", mpp:1, w:2000, h:2000,
