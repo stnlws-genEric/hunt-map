@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 39;
+const BUILD = 40;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -84,6 +84,18 @@ let trails = [], pins = [], sits = [];
 let seedDone = [];                  // seed ids already merged, so a deletion stays deleted
 let sitOpen = null;          // the sit in progress, if any
 let selT = new Set(), primary = null, selPin = null, anchors = [];
+/* Which line, if any, has had its editing deliberately opened.
+
+   Build 24 locked pins because a thumb that starts a scroll picks up whatever is
+   under it. Lines had the same problem one level up: tapping one to read it threw
+   the whole editing form at you — a kind dropdown a stray scroll can change,
+   point tools, Delete line — when all you wanted was to see what you were looking
+   at. Retyping a line by accident is exactly how a trail became a deer route
+   along its entire length.
+
+   Per selection, not a global toggle, because "only when I click edit" means the
+   next line you tap starts locked too. */
+let lineUnlocked = null;
 let tool = "pan", editMode = "move", arrowPushed = false;
 /* What the crosshair is currently aiming at. {what:"pin"} drops a new pin of the
    selected type; {what:"recovery", ...} marks where a deer was shot from, hit or
@@ -819,10 +831,10 @@ function selectTrail(id, additive){
   if(!additive) selT.clear();
   if(additive && selT.has(id)) selT.delete(id); else selT.add(id);
   primary = selT.has(id) ? id : ([...selT].pop() || null);
-  selPin = null; anchors = [];
+  selPin = null; anchors = []; lineUnlocked = null;
   syncList(); renderInsp(); draw();
 }
-function clearSel(){ selT.clear(); primary = null; selPin = null; anchors = []; syncList(); renderInsp(); draw(); }
+function clearSel(){ selT.clear(); primary = null; selPin = null; anchors = []; lineUnlocked = null; syncList(); renderInsp(); draw(); }
 
 /* ---------- edit operations ---------- */
 function span(){
@@ -2221,6 +2233,40 @@ function el(tag, attrs, kids){
 }
 const field = (label, input) => el("label", {class:"field"}, [el("span", {}, [label]), input]);
 
+/* What a line is, before what you can do to it. The same order the pin inspector
+   got in build 25: the answer to "what am I looking at" with no way to damage it
+   while you read, and one button to go further. */
+function renderLineFacts(box, body, t, L){
+  const K = KINDS[t.kind || "trail"] || KINDS.trail;
+  const bits = [el("div", {class:"stat"}, [fmtDist(L) + " \u00b7 " + t.p.length + " points"])];
+
+  if(isMem(t)){
+    /* A remembered route has no date by design, so the summary leads with how
+       often instead — the field that actually carries weight. */
+    const line = [];
+    line.push(t.what && t.what !== MEM_WHAT[0] ? t.what : "deer, not recalled");
+    line.push("seen " + (t.often || "once"));
+    if(t.season && t.season !== MEM_SEASON[0]) line.push(t.season);
+    line.push(t.both ? "travelled both ways" : "one way, as drawn");
+    bits.push(el("div", {class:"stat"}, [line.join(" \u00b7 ")]));
+    bits.push(el("div", {class:"hint"}, ["Remembered, with no date \u2014 that is deliberate."]));
+  }
+
+  if(typeof fix !== "undefined" && fix){
+    const w = llToWorld(fix.lon, fix.lat);
+    bits.push(el("div", {class:"stat"}, [fmtDist(distToLine(w[0], w[1], t.p)) + " from you"]));
+  }
+
+  const edit = el("button", {class:"btn"}, ["Edit this line"]);
+  edit.onclick = () => { lineUnlocked = t.id; renderInsp(); draw(); };
+  bits.push(el("div", {class:"sep"}),
+            el("div", {class:"row g2"}, [edit]),
+            el("div", {class:"hint"}, [
+              "Locked while you look at it. Nothing here changes the line until you " +
+              "press Edit."]));
+  body.append(...bits);
+  box.hidden = false;
+}
 function renderInsp(){
   if((selPin || primary || selT.size) && typeof SHEET !== "undefined") SHEET.atLeast(2);
   const box = document.getElementById("insp"), body = document.getElementById("insp-body");
@@ -2242,8 +2288,12 @@ function renderInsp(){
   }
   const t = getT(primary || [...selT][0]);
   if(!t){ box.hidden = true; return; }
-  document.getElementById("insp-title").textContent = "Trail";
+  document.getElementById("insp-title").textContent =
+    (KINDS[t.kind || "trail"] || KINDS.trail).label + (t.name ? " \u2014 " + t.name : "");
   const L = lenOf(t.p);
+  if(lineUnlocked !== t.id) return renderLineFacts(box, body, t, L);
+  document.getElementById("insp-title").textContent = "Editing \u2014 " +
+    (t.name || (KINDS[t.kind || "trail"] || KINDS.trail).label);
   const nameIn = el("input", {type:"text", value:t.name || "", placeholder:"e.g. Ridge road", list:"nameideas"});
   nameIn.addEventListener("input", () => { t.name = nameIn.value; saveState(); syncList(); draw(); });
   const kindSel = el("select", {});
@@ -2340,6 +2390,14 @@ function renderInsp(){
       el("button", {class:"btn sm", onclick:() => opSimplify(true)}, ["Straighten"]),
       el("button", {class:"btn sm", onclick:opJoin}, ["Join nearest"]),
       el("button", {class:"btn sm danger", onclick:opDeleteSel}, ["Delete line"])
+    ]),
+    el("div", {class:"sep"}),
+    el("div", {class:"row g2"}, [
+      el("button", {class:"btn", onclick:() => {
+        lineUnlocked = null; anchors = [];
+        if(tool === "edit") setTool("pan");
+        renderInsp(); draw();
+      }}, ["Done editing"])
     ]));
 }
 
