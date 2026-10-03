@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 28;
+const BUILD = 29;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -928,18 +928,14 @@ cv.addEventListener("pointerdown", e => {
   }
   const px = d0[0], py = d0[1];
 
+  /* Drawing commits on release, not on contact — the same lesson as the pin
+     lock. Adding the point the instant a finger landed meant you could not pan
+     while drawing at all, and the first finger of a pinch left a stray point
+     behind before the second one arrived. Now a still touch is a point, a drag
+     is a pan, and a pinch is a zoom that leaves nothing behind. */
   if(tool === "draw"){
-    if(!draft) draft = {pts:[], extend:null, redraw:null};
-    if(!draft.pts.length && !draft.redraw){
-      const le = hitLooseEnd(px, py);
-      if(le){
-        draft.extend = le;
-        const t = getT(le.id);
-        draft.pts.push((le.end ? t.p[t.p.length-1] : t.p[0]).slice());
-        toast("Extending that line."); draw(); return;
-      }
-    }
-    draft.pts.push(atScreen(px, py)); draw(); return;
+    drag = {mode:"pan", px, py, tx:view.tx, ty:view.ty, moved:false, click:null, drawTap:true};
+    return;
   }
   if(tool === "erase"){ eraseBox = {x0:px, y0:py, x1:px, y1:py, shift:e.shiftKey}; drag = {mode:"erase"}; return; }
   /* Placing a pin is pan-only. Tapping to drop used to be allowed as well, but on a
@@ -1046,6 +1042,14 @@ function endPtr(e){
                  y0:Math.min(eraseBox.y0, eraseBox.y1), y1:Math.max(eraseBox.y0, eraseBox.y1)};
       const shift = eraseBox.shift; eraseBox = null;
       if(b.x1-b.x0 > 6 && b.y1-b.y0 > 6) applyErase(b, shift); else draw();
+    }else if(drag.drawTap){
+      const [ux, uy] = evXY(e);
+      if(Math.hypot(ux - drag.px, uy - drag.py) <= TAPSLOP()){
+        /* Undo the few pixels the map crept while the thumb settled, so the
+           point lands where it was aimed rather than where it drifted. */
+        view.tx = drag.tx; view.ty = drag.ty;
+        drawTapAt(drag.px, drag.py);
+      }
     }else if(drag.mode === "pan" && !drag.moved && drag.click){
       const c = drag.click;
       if(c.hit){ selectTrail(c.hit.t.id, c.shift); if(c.fromPan) setTool("edit"); }
@@ -1085,8 +1089,50 @@ cv.addEventListener("wheel", e => {
   view.k = nk; draw();
 }, {passive:false});
 
+function drawTapAt(px, py){
+  if(!draft) draft = {pts:[], extend:null, redraw:null};
+  if(!draft.pts.length && !draft.redraw){
+    const le = hitLooseEnd(px, py);
+    if(le){
+      draft.extend = le;
+      const t = getT(le.id);
+      draft.pts.push((le.end ? t.p[t.p.length-1] : t.p[0]).slice());
+      toast("Extending that line."); syncDrawing(); draw(); return;
+    }
+  }
+  draft.pts.push(atScreen(px, py));
+  syncDrawing(); draw();
+}
+
+/* How far a finger may wander and still count as a tap. A thumb on glass is not
+   a mouse; 3px would reject most honest taps. */
+const TAPSLOP = () => COARSE ? 11 : 5;
+
+function syncDrawing(){
+  const bar = document.getElementById("drawbar");
+  if(!bar) return;
+  const on = tool === "draw";
+  bar.hidden = !on;
+  if(!on) return;
+  const n = draft ? draft.pts.length : 0;
+  document.getElementById("drawcount").textContent = n + (n === 1 ? " point" : " points");
+  document.getElementById("drawdone").disabled = n < 2;
+  document.getElementById("drawhint").textContent =
+    n === 0 ? "Tap to drop a point. Drag to move the map, pinch to zoom."
+    : n < 2 ? "One more point at least. Drag to move the map."
+    : "Keep tapping, or press Finish line.";
+}
+
 function finishDraw(){
   if(!draft) return;
+  /* A double-tap to finish lands two points on the same spot before the dblclick
+     fires, so every line drawn that way ended with a stacked duplicate — junk
+     data, and exactly the stacked-points problem the edit hint warns about. */
+  const slop = TAPSLOP() / Math.max(view.k, .0001);
+  for(let i = draft.pts.length - 1; i > 0; i--){
+    const a = draft.pts[i], b = draft.pts[i-1];
+    if(Math.hypot(a[0]-b[0], a[1]-b[1]) <= slop) draft.pts.splice(i, 1);
+  }
   const pts = draft.pts;
   if(pts.length < 2){ draft = null; setTool("pan"); return draw(); }
   push();
@@ -1148,7 +1194,7 @@ window.addEventListener("keydown", e => {
 const HINTS = {
   pan:"Drag to pan, pinch or scroll to zoom. Tap a trail to start editing it.",
   edit:"Tap a line to pick it up. Drag its points; tap two points to mark a stretch.",
-  draw:"Tap along the route. Double-tap to finish. Start on a loose end to extend that line.",
+  draw:"Tap to drop a point, drag to move the map, pinch to zoom. Press Finish line when done. Start on a loose end to extend that line.",
   erase:"Drag a box over what isn't trail. Shift deletes whole lines.",
   mark:"Move the map so the crosshair sits where the pin goes, then press Place here. Mark here drops one at your GPS fix instead."
 };
@@ -1161,7 +1207,7 @@ function setTool(t, keepDraft){
   if(t !== "edit") editMode = "move";
   cv.classList.toggle("cross", t === "draw" || t === "mark" || t === "erase" || (t === "edit" && editMode !== "move"));
   if(t !== "draw" && !keepDraft) draft = null;
-  syncPlacing(); renderInsp(); draw();
+  syncPlacing(); syncDrawing(); renderInsp(); draw();
 }
 
 /* ---------- pins ---------- */
@@ -3569,6 +3615,8 @@ document.getElementById("placego").onclick = () => {
   setTool("pan");
 };
 document.getElementById("placecancel").onclick = () => setTool("pan");
+document.getElementById("drawdone").onclick = finishDraw;
+document.getElementById("drawcancel").onclick = () => { draft = null; setTool("pan"); };
 
 document.getElementById("startblank").onclick = async () => {
   const blank = {name:"Blank map", mpp:1, w:2000, h:2000,

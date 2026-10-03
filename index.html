@@ -192,6 +192,18 @@ dl.keys dd{margin:0;color:var(--ink-2)}
 #placebar .pbwhat{font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; opacity:.75}
 #placebar .pbcoord{font-family:'IBM Plex Mono',monospace; font-size:.74rem; opacity:.85; word-break:break-word}
 #placebar .pbrow{display:grid; grid-template-columns:1fr 1.3fr; gap:.4rem}
+/* Same shelf as the place bar: finishing a line should be a button you press,
+   not a double-tap you have to land precisely with a cold thumb. */
+#drawbar{
+  position:absolute; left:50%; transform:translateX(-50%); z-index:8;
+  bottom:calc(var(--gpsbar-h, 56px) + 10px + env(safe-area-inset-bottom,0px));
+  background:var(--panel); box-shadow:var(--shadow); border:1px solid var(--line);
+  border-radius:10px; padding:.5rem .6rem; display:grid; gap:.35rem;
+  min-width:min(19rem,92vw); text-align:center;
+}
+#drawbar .pbwhat{font-size:.82rem; letter-spacing:.04em; text-transform:uppercase; opacity:.75}
+#drawbar .pbcoord{font-size:.74rem; opacity:.85}
+#drawbar .pbrow{display:grid; grid-template-columns:1fr 1.3fr; gap:.4rem}
 
 /* ---------- mobile bottom sheet ----------
    The old panel covered the map, which is the one thing you cannot spare in the
@@ -245,6 +257,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
     order:-1;                          /* a live selection sits above the tools */
   }
   #placebar{bottom:calc(var(--sheet-h,108px) + 10px)}
+  #drawbar{bottom:calc(var(--sheet-h,108px) + 10px)}
   #toast{bottom:calc(var(--sheet-h,108px) + 12px)}
   body.placing #toast{bottom:calc(var(--sheet-h,108px) + 118px)}
   #railshow{display:none}
@@ -439,6 +452,15 @@ dl.keys dd{margin:0;color:var(--ink-2)}
       <span id="updatetext">A newer build is ready.</span>
       <button class="btn sm" id="updatego">Reload</button>
       <button class="btn sm" id="updatelater">Later</button>
+    </div>
+
+    <div id="drawbar" hidden>
+      <div class="pbwhat">Drawing <b id="drawcount">0 points</b></div>
+      <div class="pbcoord" id="drawhint">Tap to drop a point. Drag to move the map.</div>
+      <div class="pbrow">
+        <button class="btn sm" id="drawcancel">Cancel</button>
+        <button class="btn sm go" id="drawdone">Finish line</button>
+      </div>
     </div>
 
     <div id="placebar" hidden>
