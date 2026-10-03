@@ -58,7 +58,11 @@ header{display:flex;align-items:center;gap:.6rem;flex-wrap:nowrap;padding:.22rem
   background:var(--panel);border-bottom:1px solid var(--line);min-height:0}
 .sub{font-family:var(--f-num);font-size:.64rem;color:var(--ink-2)}
 .sub b{font-weight:500;color:var(--ink)}
-#savestate{margin-left:auto;font-family:var(--f-ui);font-size:.75rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
+/* The build number used to ride in the subline as "BUILD 35", which gave a
+   number nobody acts on the same weight as the relief and contour readings.
+   It is a version stamp, so it lives with the save state and is set small. */
+#buildtag{margin-left:auto;font-family:var(--f-num);font-size:.58rem;letter-spacing:.04em;color:var(--ink-2);opacity:.7}
+#savestate{margin-left:7px;font-family:var(--f-ui);font-size:.75rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-2)}
 #savestate[data-s="saving"]{color:var(--clay)} #savestate[data-s="saved"]{color:var(--moss)}
 
 .card{background:var(--panel);border:1px solid var(--line);border-radius:3px;box-shadow:var(--shadow);flex:none}
@@ -311,6 +315,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
 <div id="app">
   <header>
     <div class="sub" id="subline"></div>
+    <div id="buildtag"></div>
     <div id="savestate" data-s="local">&mdash;</div>
   </header>
   <div id="stage">

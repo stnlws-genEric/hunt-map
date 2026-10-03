@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 35;
+const BUILD = 36;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -3682,7 +3682,7 @@ function startMap(pack, state){
   document.title = (pack.name || "Hunt Map") + " — Hunt Map";
   document.getElementById("subline").innerHTML =
     (pack.relief_ft ? "RELIEF <b>" + pack.relief_ft[0] + "–" + pack.relief_ft[1] + " ft</b> · " : "") +
-    "CONTOURS <b>10 ft</b> · BUILD <b>" + BUILD + "</b>";
+    "CONTOURS <b>10 ft</b>";
   if(pack.aerial){ aerialImg = new Image(); aerialImg.onload = draw; aerialImg.src = pack.aerial; }
   document.getElementById("welcome").hidden = true;
   SHEET.init();
@@ -3785,6 +3785,7 @@ window.addEventListener("resize", () => { placeInspector(); resize(); draw(); })
 window.addEventListener("orientationchange", () => setTimeout(() => { placeInspector(); resize(); fit(); draw(); }, 250));
 
 (async function boot(){
+  document.getElementById("buildtag").textContent = "v" + BUILD;
   resize();
   try{
     const pack = await DB.get("pack");
