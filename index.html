@@ -5,7 +5,12 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
 <meta name="robots" content="noindex,nofollow">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- "default", not "black-translucent". Translucent puts the page under the iOS
+     status bar and relies on env(safe-area-inset-top) to push content clear; when
+     that inset reports 0, which it does in some standalone cases, the header ends
+     up beneath the clock with iOS's blur composited over it. Reserving the bar
+     costs a few pixels and is predictable. -->
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#1d211a">
 <title>Hunt Map</title>
 <link rel="manifest" href="manifest.webmanifest">
@@ -175,7 +180,11 @@ dl.keys dd{margin:0;color:var(--ink-2)}
 @media (max-width:760px){
   .rail{width:calc(100% - 16px);max-height:52%}
   #insp{top:auto;left:8px;right:8px;bottom:52px;width:auto;max-height:46%}
-  #readout{bottom:auto;top:8px;right:8px;left:auto;flex-direction:column;align-items:flex-end}
+  /* The readout used to sit top-right on a phone to dodge the sheet, which put
+     it directly under the header and the status bar. It rides above the sheet
+     instead, the same way the place bar and the toast do. */
+  #readout{bottom:calc(var(--sheet-h,108px) + 10px); top:auto; left:8px; right:auto;
+    flex-direction:column; align-items:flex-start}
   #compass{display:none}
   .btn{min-height:38px}
   .btn.sm{min-height:32px}
@@ -260,7 +269,12 @@ dl.keys dd{margin:0;color:var(--ink-2)}
   #drawbar{bottom:calc(var(--sheet-h,108px) + 10px)}
   #toast{bottom:calc(var(--sheet-h,108px) + 12px)}
   body.placing #toast{bottom:calc(var(--sheet-h,108px) + 118px)}
+  /* Both of these belong to the desktop. On a phone the panel is put away with
+     HIDE on the grab bar, which leaves a round button in the corner to bring it
+     back. The chevron had no such button — #railshow is display:none here — so
+     pressing it hid the whole toolbox with no way to recover but a reload. */
   #railshow{display:none}
+  #railhide{display:none}
 }
 #advanced{border-top:1px solid var(--line);margin-top:4px;padding-top:4px}
 #advanced>summary{

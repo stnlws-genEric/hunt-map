@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 30;
+const BUILD = 31;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -2806,8 +2806,11 @@ const SHEET = (() => {
   }catch(_){}
   function apply(px){ rail.style.setProperty("--sheet-h", Math.round(px) + "px"); }
   function paint(){
-    const away = isPhone() && at === 0;
-    rail.hidden = away;
+    const phone = isPhone();
+    const away = phone && at === 0;
+    /* Only the phone's away state owns rail.hidden. On a desktop the chevron owns
+       it, and paint() used to stamp it back to visible on every resize. */
+    if(phone) rail.hidden = away;
     if(show) show.hidden = !away;
     /* The crosshair centres on the visible map, so it has to be recomputed the
        moment the panel stops covering part of it. */
