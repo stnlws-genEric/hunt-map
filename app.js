@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 36;
+const BUILD = 37;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -3060,6 +3060,27 @@ const MEM_OFTEN  = ["once", "a few times", "regularly", "every year"];
 const oftenWeight = o => Math.max(1, MEM_OFTEN.indexOf(o) + 1);
 
 const isMem = t => t && t.kind === "deer";
+/* Builds 29-30 stopped a remembered route from swallowing a trail, but they did
+   not clean the lines that had already been through it. One of Steven's trails
+   came back carrying what/often/both while its kind had been put back to "trail",
+   and those fields are unreachable from the UI, because the inspector only offers
+   them on a deer-kind line. They sat there invisibly, feeding nothing and
+   misreporting the record to anything that read it.
+
+   Anything that is not a remembered route has no business holding recollection
+   fields. Strip them on load and stamp the lines that changed, so the fix travels
+   to the other device instead of being undone by it on the next merge. */
+function scrubMemFields(){
+  let n = 0;
+  for(const t of trails){
+    if(isMem(t)) continue;
+    if(t.what === undefined && t.often === undefined && t.both === undefined) continue;
+    delete t.what; delete t.often; delete t.both;
+    t.m = Date.now(); n++;
+  }
+  if(n){ saveState(); flushSave(); }
+  return n;
+}
 const memLines = () => trails.filter(isMem);
 
 /* ---------- hiding whole kinds of line ----------
@@ -3674,6 +3695,9 @@ function startMap(pack, state){
   seedDone = (state && state.seedDone) || [];
   graves = (state && state.graves) || {};
   refreshSnap();
+  /* After refreshSnap, deliberately: the save diffs against that snapshot, so
+     scrubbing afterwards is what makes the cleanup register as a real change. */
+  scrubMemFields();
   sitOpen = (state && state.sitOpen) || null;
   nudge = (state && state.nudge) || {dx:0, dy:0, rot:0, scl:1};
   /* The header strip lost its title — the name of your own land was the one fact
