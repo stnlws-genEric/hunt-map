@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 32;
+const BUILD = 33;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -34,10 +34,15 @@ const DB = (() => {
 
 /* ---------- vocabulary ---------- */
 const KINDS = {
-  trail: {label:"Trail",         dash:[],      w:2.6, col:null},
-  road:  {label:"Road",          dash:[],      w:4.0, col:null},
-  atv:   {label:"ATV / buggy",   dash:[10,4],  w:3.0, col:null},
-  foot:  {label:"Foot path",     dash:[3,4],   w:2.2, col:null},
+  /* Terracotta rather than blaze orange. The old colour was the UI accent doing
+     double duty as a map colour, and on aerial photography it shouted loud enough
+     to be the first thing you saw — which is wrong, the ground should be. These
+     still read at a glance without taking over. The kinds that followed --blaze
+     now name their own colour so the accent stays a UI colour. */
+  trail: {label:"Trail",         dash:[],      w:2.2, col:"#a8623f"},
+  road:  {label:"Road",          dash:[],      w:3.4, col:"#b06a40"},
+  atv:   {label:"ATV / buggy",   dash:[10,4],  w:2.6, col:"#a8623f"},
+  foot:  {label:"Foot path",     dash:[3,4],   w:2.0, col:"#9c6845"},
   creek: {label:"Creek / drain", dash:[8,5],   w:2.4, col:"#3f9fc4"},
   edge:  {label:"Field edge",    dash:[2,6],   w:2.0, col:"#d9c23a"},
   route: {label:"Access route",   dash:[1,5],   w:2.8, col:"#b06bd6"},
