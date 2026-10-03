@@ -339,6 +339,7 @@ dl.keys dd{margin:0;color:var(--ink-2)}
             <button class="btn" data-tool="mark">Drop pin</button>
             <button class="btn" data-tool="measure">Measure</button>
             <button class="btn sm" id="pinlock" aria-pressed="false" style="grid-column:1/-1">Pins are locked</button>
+            <button class="btn" id="sitbtn" style="grid-column:1/-1">Where to sit</button>
           </div>
           <details id="advanced">
             <summary>Advanced &mdash; trail editing</summary>
@@ -371,6 +372,14 @@ dl.keys dd{margin:0;color:var(--ink-2)}
             <button class="btn sm" id="selnone">None</button>
             <button class="btn sm danger" id="delsel">Delete picked</button>
           </div>
+        </div>
+      </div>
+
+      <div class="card" id="sitcard" hidden>
+        <h2>Where to sit <button class="btn sm" id="sitclear" style="padding:0 .4rem;min-height:0;line-height:1.3">Clear</button></h2>
+        <div class="body">
+          <div class="hint" id="sithead"></div>
+          <div class="row g2" id="sitlist" style="margin-top:.4rem"></div>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 37;
+const BUILD = 38;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -447,6 +447,7 @@ function draw(){
     }
   }
   if(layers.pins) for(const p of pins) if(pinShown(p)) drawPin(p);
+  drawSitSpots();
   if(fix) drawFix();
   if(tool === "measure") drawMeasure();
   if(tool === "mark"){ drawCrosshair(); syncPlacing(); }
@@ -542,7 +543,11 @@ function drawFix(){
    where your eye puts the middle — about 116 px out on a 1280 px window, which is
    a real distance on the ground. On a phone the sheet covers the bottom instead,
    and the error runs the other way. */
-function mapCentre(){
+/* The box of map you can actually see, with the floating panels subtracted.
+   mapCentre answers "where is the middle of that" and is what the crosshair and
+   centreOn use; frameSits needs the size of it too, so the measuring lives here
+   once rather than being guessed at twice. */
+function mapBox(){
   const cr = cv.getBoundingClientRect();
   let left = 0, right = 0, bottom = 0;
   /* Both floating panels eat into the map: the tool rail on the left, the
@@ -558,10 +563,14 @@ function mapCentre(){
   }
   left = Math.max(0, left); right = Math.max(0, right); bottom = Math.max(0, bottom);
   /* If the panels between them leave no room, fall back to the whole canvas
-     rather than returning a centre outside it. */
+     rather than returning a box outside it. */
   if(left + right >= W - 40){ left = right = 0; }
   if(bottom >= H - 40) bottom = 0;
-  return [(left + (W - right)) / 2, (H - bottom) / 2];
+  return {x0:left, y0:0, x1:W - right, y1:H - bottom, w:W - right - left, h:H - bottom};
+}
+function mapCentre(){
+  const b = mapBox();
+  return [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2];
 }
 
 function drawCrosshair(){
@@ -2740,13 +2749,252 @@ function renderSits(){
 /* ---------- approach-wind check ----------
    A stand can play the wind perfectly while the walk in blows it out. This looks
    at the route, not just the stand, which is the failure you cannot otherwise see. */
+/* ---------- where to sit (build 38) ---------- */
+/* Steven hunts from the ground in a ghillie far more than he sits in a stand, so
+   the question is not "which stand tonight" but "where do I put my backside".
+   That is a search over the whole property rather than a ranking of four pins.
+
+   Scoring, in one sentence: how much remembered deer movement is inside rifle
+   range of this patch of ground, minus whatever the wind is about to carry your
+   scent across.
+
+   Three judgement calls are baked in, and they are the ones to argue with first
+   if the answers look wrong:
+
+   SIT_RANGE 80 yd  — Steven's shots from the ground have run 48 to 65 yd. 80
+     is generous for timber without being a fantasy.
+   SIT_SCENT 150 yd / SIT_CONE 50 deg — scent is treated as a cone downwind.
+     Real scent is messier and, in a creek bottom at first light, thermals beat
+     the forecast outright. This model knows nothing about that.
+   BAIT_NEAR 100 yd — a remembered route that dies at the feeder is deer walking
+     to corn, not deer using the ground. Counting those put the top of the list
+     on top of the feeder, which is a question nobody needed answered. */
+const SIT_RANGE = 80 * 0.9144;      // metres
+const SIT_SCENT = 150 * 0.9144;
+const SIT_CONE  = 50;               // degrees either side of downwind
+const BAIT_NEAR = 100 * 0.9144;
+const SIT_STEP  = 10 * 0.9144;      // grid resolution, metres
+const SIT_APART = 80 * 0.9144;      // keep answers this far apart
+let sitSpots = [];                  // transient: never saved, never synced
+
+function baitPins(){ return pins.filter(p => p.t === "feeder" || p.t === "food"); }
+/* The routes worth scoring against: remembered movement that is not the feeder's
+   doing. Returns the excluded ones too, because hiding that from the answer
+   would be hiding the most opinionated thing this function does. */
+function naturalMem(){
+  const bait = baitPins(), keep = [], drop = [];
+  for(const t of memLines()){
+    if(!t.p || t.p.length < 2) continue;
+    const near = bait.some(b => distToLine(b.x, b.y, t.p) < BAIT_NEAR);
+    (near ? drop : keep).push(t);
+  }
+  return {keep, drop};
+}
+function inParcel(x, y){
+  const ps = (D && D.parcels) || [];
+  if(!ps.length) return true;                 // no boundary known: score it all
+  for(const pc of ps){
+    const r = pc.p; let inside = false;
+    for(let i = 0; i < r.length - 1; i++){
+      const [x1,y1] = r[i], [x2,y2] = r[i+1];
+      if((y1 > y) !== (y2 > y) && x < (x2-x1)*(y-y1)/(y2-y1) + x1) inside = !inside;
+    }
+    if(inside) return true;
+  }
+  return false;
+}
+/* Does your scent, leaving (x,y) on this wind, cross this route? Sampled along
+   the line rather than tested at its nearest point: a route can pass behind you
+   at 20 yd and still run through your scent cone 120 yd downwind. */
+function routeBurned(x, y, t, toward){
+  for(let i = 0; i < t.p.length - 1; i++){
+    for(let f = 0; f <= 1; f += 0.25){
+      const qx = t.p[i][0] + (t.p[i+1][0] - t.p[i][0]) * f;
+      const qy = t.p[i][1] + (t.p[i+1][1] - t.p[i][1]) * f;
+      const dx = qx - x, dy = qy - y;
+      const d = Math.hypot(dx, dy) * MPP();
+      if(d > SIT_SCENT || d < 2) continue;
+      const brg = (Math.atan2(dx, -dy) * 180/Math.PI + 360) % 360;
+      if(Math.abs(((brg - toward + 540) % 360) - 180) < SIT_CONE) return true;
+    }
+  }
+  return false;
+}
+function scoreSit(x, y, routes, windDeg){
+  const cov = [];
+  for(const t of routes){
+    const d = distToLine(x, y, t.p);
+    if(d <= SIT_RANGE) cov.push({t, d, w:oftenWeight(t.often)});
+  }
+  if(!cov.length) return null;
+  const total = cov.reduce((n, c) => n + c.w, 0);
+  let kept = total;
+  if(windDeg !== null){
+    const toward = (windDeg + 180) % 360;
+    for(const c of cov) if(routeBurned(x, y, c.t, toward)) kept -= c.w;
+  }
+  return {x, y, cov, total, kept};
+}
+function findSits(windDeg){
+  const {keep, drop} = naturalMem();
+  if(!keep.length) return {spots:[], drop, routes:0};
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const ps = (D.parcels || []);
+  if(ps.length){ for(const pc of ps) for(const [x,y] of pc.p){
+    x0 = Math.min(x0,x); y0 = Math.min(y0,y); x1 = Math.max(x1,x); y1 = Math.max(y1,y); } }
+  else { x0 = 0; y0 = 0; x1 = D.w; y1 = D.h; }
+  const step = SIT_STEP / MPP();
+  const out = [];
+  for(let x = x0; x <= x1; x += step)
+    for(let y = y0; y <= y1; y += step){
+      if(!inParcel(x, y)) continue;
+      const s = scoreSit(x, y, keep, windDeg);
+      if(s && s.kept > 0) out.push(s);
+    }
+  /* Rank by what survives the wind, then by raw movement, then by how far you
+     have to leave a trail to get there. Without the last term the answer wanders
+     into the middle of a thicket for a tenth of a point. */
+  const walkable = trails.filter(t => !isMem(t) && t.kind !== "creek" && t.p.length > 1);
+  const trailDist = s => walkable.length
+    ? Math.min(...walkable.map(t => distToLine(s.x, s.y, t.p))) : 0;
+  for(const s of out) s.trail = trailDist(s);
+  out.sort((a, b) => b.kept - a.kept || b.total - a.total || a.trail - b.trail);
+  const spots = [];
+  for(const s of out){
+    if(spots.every(k => Math.hypot(k.x-s.x, k.y-s.y) * MPP() > SIT_APART)) spots.push(s);
+    if(spots.length >= 5) break;
+  }
+  return {spots, drop, routes:keep.length};
+}
+function drawSitSpots(){
+  if(!sitSpots.length) return;
+  ctx.save();
+  sitSpots.forEach((s, i) => {
+    const X = sx(s.x), Y = sy(s.y), r = i ? 12 : 15;
+    ctx.beginPath(); ctx.arc(X, Y, r + 3, 0, 7);
+    ctx.fillStyle = "rgba(20,24,18,.55)"; ctx.fill();
+    ctx.beginPath(); ctx.arc(X, Y, r, 0, 7);
+    ctx.fillStyle = i ? "#2b7a4b" : "#3ea76a";
+    ctx.strokeStyle = "#F2EFE6"; ctx.lineWidth = 2; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#F2EFE6";
+    ctx.font = "600 " + (i ? 13 : 16) + "px ui-monospace,monospace";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(String(i + 1), X, Y + 1);
+  });
+  ctx.restore();
+}
+async function whereToSit(){
+  if(!D){ toast("Load a map first."); return; }
+  const btn = document.getElementById("sitbtn");
+  if(btn){ btn.disabled = true; btn.textContent = "Working…"; }
+  /* Ask for a fresh forecast, but never block on it: offline, the cached wind is
+     the honest answer and a stale wind flagged as stale beats no answer at all. */
+  try{ await getWeather(); }catch(_){}
+  const windDeg = LASTWX ? LASTWX.deg : null;
+  const r = findSits(windDeg);
+  sitSpots = r.spots;
+  renderSitList(r, windDeg);
+  if(btn){ btn.disabled = false; btn.textContent = "Where to sit"; }
+  draw();
+  /* Same rule as selecting a pin: you asked a question, so the answer has to be
+     on screen even if you had the panel put away. Bringing the panel up is not
+     enough on a phone — the card is below the Tool card, which is exactly how the
+     pin inspector spent five builds rendering one viewport past the fold. */
+  SHEET.atLeast(2);
+  const card = document.getElementById("sitcard");
+  if(card) requestAnimationFrame(() => card.scrollIntoView({block:"nearest", behavior:"smooth"}));
+  /* Frame AFTER the sheet has finished growing. The panel height animates over
+     200ms and getBoundingClientRect reports the half-way value while it does, so
+     measuring now fits the map to a window that is about to shrink — which put
+     the two best answers underneath the sheet. */
+  afterSheet(frameSits);
+}
+/* Put every answer on screen at a zoom where you can read the ground between
+   them. Centring on the best one alone leaves the rest off the edge, and at the
+   full-property zoom the markers are specks. */
+/* Run once the bottom sheet has settled. Prefers the real transitionend over a
+   guessed delay, with the timer as the fallback for the cases that never fire it:
+   reduced-motion, a sheet that was already at the right size, desktop. */
+function afterSheet(fn){
+  const el = document.getElementById("rail");
+  if(!el){ fn(); return; }
+  let done = false;
+  const go = () => { if(done) return; done = true; el.removeEventListener("transitionend", on); fn(); };
+  const on = e => { if(e.propertyName === "height") go(); };
+  el.addEventListener("transitionend", on);
+  setTimeout(go, 280);
+}
+function frameSits(){
+  if(!sitSpots.length) return;
+  const xs = sitSpots.map(s => s.x), ys = sitSpots.map(s => s.y);
+  const pad = 70 / MPP();                       // ~75 yd of breathing room
+  const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad;
+  const y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+  /* Fit to the map you can SEE. Using the whole canvas here put the two best
+     answers underneath the bottom sheet, which is a specific way of being wrong:
+     the feature drew the thing you asked for and then covered it up. */
+  const b = mapBox();
+  const k = Math.min(b.w / Math.max(1, x1 - x0), b.h / Math.max(1, y1 - y0));
+  view.k = Math.max(fitK(), Math.min(k, 6));    // never below the whole-map zoom
+  centerOn((x0 + x1) / 2, (y0 + y1) / 2);
+}
+const fitK = () => Math.min((W - 32) / D.w, (H - 32) / D.h);
+
+function clearSits(){
+  sitSpots = [];
+  const c = document.getElementById("sitcard"); if(c) c.hidden = true;
+  draw();
+}
+function renderSitList(r, windDeg){
+  const card = document.getElementById("sitcard");
+  const head = document.getElementById("sithead");
+  const list = document.getElementById("sitlist");
+  if(!card) return;
+  card.hidden = false;
+  const yd = m => Math.round(m / 0.9144);
+  const bits = [];
+  if(windDeg === null) bits.push("<b>No wind known</b> — offline with nothing cached, so these are ranked on movement alone and ignore your scent entirely.");
+  else bits.push("Wind <b>" + (LASTWX.dir || windDeg + "°") + "</b> — your scent runs toward " + Math.round((windDeg + 180) % 360) + "°.");
+  bits.push(r.routes + " remembered route" + (r.routes === 1 ? "" : "s") + " scored.");
+  if(r.drop.length) bits.push("<b>" + r.drop.length + " left out</b> because they end at your feeder — that is deer walking to corn, not deer using the ground.");
+  bits.push("Blank ground is ground you have not recalled, not ground deer avoid.");
+  head.innerHTML = bits.join(" ");
+  if(!r.spots.length){
+    list.innerHTML = "<div class='hint'>Nothing scores above zero. Either every patch of movement is downwind of itself on this wind, or there are no remembered routes away from the feeder yet.</div>";
+    return;
+  }
+  list.innerHTML = r.spots.map((s, i) => {
+    const ll = worldToLL(s.x, s.y);
+    const kinds = {};
+    for(const c of s.cov) kinds[c.t.what || "unspecified"] = (kinds[c.t.what || "unspecified"] || 0) + 1;
+    const what = Object.entries(kinds).map(([k, n]) => n + " " + k).join(", ");
+    const near = s.cov.slice().sort((a, b) => a.d - b.d)[0];
+    return "<button class='btn sm sitrow' data-i='" + i + "' style='grid-column:1/-1;text-align:left;display:block;padding:.4rem .5rem'>"
+      + "<b>" + (i + 1) + "</b>  " + ll[1].toFixed(5) + "°N " + Math.abs(ll[0]).toFixed(5) + "°W"
+      + "<div class='hint' style='margin-top:.15rem'>"
+      + s.cov.length + " route" + (s.cov.length === 1 ? "" : "s") + " in range (" + what + ") · "
+      + "keeps <b>" + s.kept + "</b> of " + s.total + " on this wind<br>"
+      + "nearest route " + yd(near.d) + " yd · " + (yd(s.trail) <= 2 ? "on a trail" : yd(s.trail) + " yd off the nearest trail")
+      + "</div></button>";
+  }).join("");
+  list.querySelectorAll(".sitrow").forEach(b => b.onclick = () => {
+    const s = r.spots[+b.dataset.i];
+    centerOn(s.x, s.y);
+  });
+}
+
 function approachRisk(stand, windFromDeg){
   const rs = trails.filter(t => t.kind === "route" && (t.stands || []).includes(stand.id));
   if(!rs.length || windFromDeg === null) return null;
   const toward = (windFromDeg + 180) % 360;    // the way your scent travels
   let worst = 0, hits = 0, total = 0;
   for(const r of rs) for(const q of r.p){
-    const dx = stand.x - q[0], dy = stand.y - q[1];
+    /* The bearing has to run FROM the stand TOWARD the route point, because what
+       we are asking is whether your scent, leaving the stand, lands on the way you
+       walked in. This was written with both terms negated, which is the same
+       bearing turned 180 degrees: the check warned you on exactly the winds that
+       were safe and said nothing on the winds that blew you out. */
+    const dx = q[0] - stand.x, dy = q[1] - stand.y;
     const d = Math.hypot(dx, dy) * MPP();
     total++;
     if(d > 230 || d < 8) continue;             // 250 yd of relevance
@@ -3822,6 +4070,8 @@ window.addEventListener("orientationchange", () => setTimeout(() => { placeInspe
   placeInspector();
   renderPinKinds();
   renderLineKinds();
+  document.getElementById("sitbtn").onclick   = whereToSit;
+  document.getElementById("sitclear").onclick = clearSits;
   document.getElementById("lt-all").onclick  = () => {
     hiddenLines.clear(); saveHiddenLines(); renderLineKinds(); syncList(); draw(); };
   document.getElementById("lt-none").onclick = () => {
