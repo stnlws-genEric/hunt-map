@@ -1,7 +1,7 @@
 "use strict";
 /* Hunt Map — offline field map and editor. All data stays on this device. */
 
-const BUILD = 27;
+const BUILD = 28;
 const R = 6378137;
 const COARSE = matchMedia("(pointer: coarse)").matches;
 const GRAB = COARSE ? 22 : 15;          // finger vs mouse
@@ -40,7 +40,10 @@ const KINDS = {
   foot:  {label:"Foot path",     dash:[3,4],   w:2.2, col:null},
   creek: {label:"Creek / drain", dash:[8,5],   w:2.4, col:"#3f9fc4"},
   edge:  {label:"Field edge",    dash:[2,6],   w:2.0, col:"#d9c23a"},
-  route: {label:"Access route",   dash:[1,5],   w:2.8, col:"#b06bd6"}
+  route: {label:"Access route",   dash:[1,5],   w:2.8, col:"#b06bd6"},
+  /* Bone, to match the deer pin chips, so it reads as sign rather than as
+     something you can walk. Chevrons are drawn along it separately. */
+  deer:  {label:"Deer route (remembered)", dash:[6,4], w:2.4, col:"#E8E3D6"}
 };
 /* Pin colours are FIXED, never theme-dependent: they sit on aerial photography,
    and the aerial does not get darker when the phone switches to dark mode. */
@@ -351,6 +354,7 @@ function draw(){
     const blaze = css("--blaze");
     ctx.lineCap = "round"; ctx.lineJoin = "round";
     for(const t of trails){
+      if(!lineShown(t)) continue;
       const ks = KINDS[t.kind] || KINDS.trail, pts = t.p.map(nudged);
       ctx.beginPath();
       pts.forEach((q,i) => i ? ctx.lineTo(sx(q[0]), sy(q[1])) : ctx.moveTo(sx(q[0]), sy(q[1])));
@@ -359,12 +363,13 @@ function draw(){
       ctx.setLineDash(on ? [] : ks.dash);
       ctx.strokeStyle = on ? "#fff" : (ks.col || blaze);
       ctx.lineWidth = on ? ks.w+.8 : ks.w; ctx.stroke(); ctx.setLineDash([]);
+      if(isMem(t)) drawChevrons(t, pts);
     }
     if(layers.labels && view.k > .42){
       ctx.font = "600 12px 'Barlow Condensed',sans-serif";
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       const placed = [];
-      for(const {t} of trails.filter(t => t.name).map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L)){
+      for(const {t} of trails.filter(t => t.name && lineShown(t)).map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L)){
         const wd = ctx.measureText(t.name).width + 9;
         const pl = labelRun(t.p.map(nudged), wd);
         if(!pl || pl.x < -60 || pl.x > W+60 || pl.y < -30 || pl.y > H+30) continue;
@@ -703,6 +708,7 @@ function hitPin(px, py){
 function hitTrail(px, py){
   let best = null, bd = LINEGRAB, bi = -1;
   for(const t of trails){
+    if(!lineShown(t)) continue;
     const pts = t.p.map(nudged);
     for(let i = 0; i < pts.length-1; i++){
       const r = distSeg(px, py, [sx(pts[i][0]), sy(pts[i][1])], [sx(pts[i+1][0]), sy(pts[i+1][1])]);
@@ -751,7 +757,17 @@ function restore(s){
   anchors = [];
   after(null);
 }
-function after(msg){ saveState(); syncList(); renderInsp(); renderSits(); renderPinKinds(); draw(); if(msg) toast(msg); }
+/* after() marks a discrete, finished change — a pin dropped, a line edited, an
+   undo. Those commit immediately rather than waiting out the debounce, because
+   the debounce exists for text fields that fire on every keystroke, and a 700ms
+   window is exactly long enough to lose the last thing you did when the phone
+   gets locked. pagehide starts a flush but cannot guarantee an async IndexedDB
+   write finishes, so the real fix is not to be holding anything when it fires. */
+function after(msg){
+  saveState(); flushSave();
+  syncList(); renderInsp(); renderSits(); renderPinKinds(); renderLineKinds(); draw();
+  if(msg) toast(msg);
+}
 
 /* ---------- selection ---------- */
 function selectTrail(id, additive){
@@ -1669,9 +1685,13 @@ async function buildBriefing(mode){
     L.push("  • " + bits.join(", ") + (p.note ? " — " + p.note : ""));
   }
   L.push("");
-  L.push("TRAILS AND LINES (" + trails.length + " lines, " +
-         fmtDist(trails.reduce((s, t) => s + lenOf(t.p), 0)) + " total)");
-  const ranked = trails.map(t => ({t, L:lenOf(t.p)})).sort((a, b) => b.L - a.L);
+  /* Remembered routes are kept out of the trail totals. They are not paths you
+     walk, and letting a dozen memories inflate "47 lines, 3.37 mi" would quietly
+     corrupt the one number that means something. */
+  const walked = trails.filter(t => !isMem(t));
+  L.push("TRAILS AND LINES (" + walked.length + " lines, " +
+         fmtDist(walked.reduce((s, t) => s + lenOf(t.p), 0)) + " total)");
+  const ranked = walked.map(t => ({t, L:lenOf(t.p)})).sort((a, b) => b.L - a.L);
   for(const o of ranked.slice(0, 14))
     L.push("  • " + (o.t.name || "unnamed") + " (" + (KINDS[o.t.kind] || KINDS.trail).label +
            ", " + fmtDist(o.L) + ")" +
@@ -1680,6 +1700,55 @@ async function buildBriefing(mode){
                  const p = pins.find(x => x.id === id); return p ? (p.name || "a stand") : "?";
                }).join(", ") + "]" : ""));
   if(ranked.length > 14) L.push("  • …and " + (ranked.length - 14) + " shorter lines");
+  /* ---- remembered routes ----
+     Undated by design, so they are reported apart from everything with a date on
+     it and never sorted into it. Soft memory contaminating a hard-data report is
+     the only way this backfires. */
+  const mem = memLines();
+  if(mem.length){
+    const NEAR = 137.16;                         // 150 yd
+    L.push("");
+    L.push("REMEMBERED DEER ROUTES (" + mem.length + " drawn from memory \u2014 no dates, pattern evidence only)");
+    L.push("  Recollection is sampled where he was standing, so these cluster near his stands.");
+    L.push("  Absence of a route means nobody was watching there, not that deer do not use it.");
+    for(const t of mem.slice().sort((a, b) => oftenWeight(b.often) - oftenWeight(a.often)))
+      L.push("  • " + memLabel(t) + ", " + fmtDist(lenOf(t.p)) +
+             (t.both ? ", both directions" : "") + (t.note ? " — " + t.note : ""));
+
+    /* Count and weight are both measured over the same window. They were briefly
+       measured over different ones, which printed "4 routes within 150 yd, weight
+       7" — a sentence that cannot be checked by the person reading it. */
+    const spots = [...pins.filter(p => p.t === "stand" || p.t === "blind" || p.t === "terrain")];
+    const scored = spots.map(p => ({p, w:memWeight(p, NEAR), near:memNear(p, NEAR)}))
+                        .filter(o => o.near.length)
+                        .sort((a, b) => b.w - a.w);
+    if(scored.length){
+      L.push("");
+      L.push("  WHERE THEY CONVERGE (weighted by how often each route gets used)");
+      for(const o of scored.slice(0, 8))
+        L.push("    • " + (o.p.name || (PINS[o.p.t] || PINS.note).label) +
+               ": " + o.near.length + (o.near.length === 1 ? " route" : " routes") +
+               " within " + fmtDist(NEAR) + ", weight " + o.w +
+               " · nearest " + fmtDist(o.near[0].d) + " (" + memLabel(o.near[0].t) + ")");
+    }
+    const r = rutState(now);
+    const rutSoon = r.phase === "in" || (r.phase === "before" && r.days <= 30);
+    const doe = mem.filter(rutRelevant);
+    if(rutSoon && doe.length){
+      L.push("");
+      L.push("  FOR THE RUT (" + fmtMD(r.from) + "\u2013" + fmtMD(r.to) + ", " +
+             (r.phase === "in" ? "happening now" : r.days + " days out") + ")");
+      L.push("    Bucks follow does, so doe travel is the infrastructure and bucks are the traffic on it.");
+      for(const t of doe.sort((a, b) => oftenWeight(b.often) - oftenWeight(a.often)).slice(0, 6)){
+        const nearStands = pins.filter(p => (p.t === "stand" || p.t === "blind") &&
+                                            distToLine(p.x, p.y, t.p) <= NEAR)
+                               .map(p => (p.name || "a stand") + " at " + fmtDist(distToLine(p.x, p.y, t.p)));
+        L.push("    • " + memLabel(t) +
+               (nearStands.length ? " — passes " + nearStands.join(", ") : " — no stand within " + fmtDist(NEAR)));
+      }
+    }
+  }
+
   L.push("");
   L.push("SIT LOG (what each stand has actually produced this season)");
   const season = inSeason(sits);
@@ -1989,11 +2058,58 @@ function renderInsp(){
     if(k === (t.kind || "trail")) o.selected = true;
     kindSel.appendChild(o);
   }
-  kindSel.addEventListener("change", () => { t.kind = kindSel.value; saveState(); syncList(); draw(); });
+  kindSel.addEventListener("change", () => {
+    t.kind = kindSel.value;
+    /* A remembered route carries no date and no clock time. Not today's, not a
+       placeholder — absent, because he does not know it. */
+    if(isMem(t)){ delete t.when; delete t.tod; }
+    saveState(); syncList(); renderLineKinds(); renderInsp(); draw();
+  });
+
+  /* The fields that only a remembered route has. Coarse on purpose: false
+     precision on a five-year-old memory is worse than admitting you forgot. */
+  const memBox = el("div", {});
+  if(isMem(t)){
+    const pick = (label, key, vals, dflt) => {
+      const sel = el("select", {});
+      for(const v of vals){
+        const o = el("option", {value:v}, [v]);
+        if(v === (t[key] || dflt)) o.selected = true;
+        sel.appendChild(o);
+      }
+      sel.addEventListener("change", () => { t[key] = sel.value; saveState(); syncList(); draw(); });
+      return field(label, sel);
+    };
+    const both = el("button", {class:"btn sm", "aria-pressed":String(!!t.both)},
+                    [t.both ? "Both directions" : "One way, as drawn"]);
+    both.onclick = () => {
+      t.both = !t.both;
+      both.setAttribute("aria-pressed", String(!!t.both));
+      both.textContent = t.both ? "Both directions" : "One way, as drawn";
+      saveState(); draw();
+    };
+    const rev = el("button", {class:"btn sm"}, ["Reverse direction"]);
+    rev.onclick = () => { push(); t.p.reverse(); after("Direction reversed."); };
+    memBox.append(
+      el("div", {class:"sep"}),
+      el("div", {class:"grp"}, ["What you remember"]),
+      pick("What was it", "what", MEM_WHAT, MEM_WHAT[0]),
+      pick("Time of year", "season", MEM_SEASON, MEM_SEASON[0]),
+      pick("How often you've seen it used", "often", MEM_OFTEN, MEM_OFTEN[0]),
+      el("div", {class:"row g2"}, [both, rev]),
+      el("div", {class:"hint"}, [
+        "No date on purpose. How often matters more than when — a crossing used every " +
+        "year is stronger evidence than any single dated sighting."]),
+      el("div", {class:"hint"}, [
+        "Worth remembering: you recall deer you saw, and you saw them from your stands " +
+        "and off your trails. Blank map is not empty woods."])
+    );
+  }
   const hasSpan = anchors.length === 2, hasOne = anchors.length === 1;
   body.append(
     field("Name", nameIn),
     field("What it is", kindSel),
+    memBox,
     el("div", {class:"stat"}, [fmtDist(L) + " · " + t.p.length + " points"]),
     el("div", {class:"sep"}),
     el("div", {class:"grp"}, ["Points"]),
@@ -2466,7 +2582,15 @@ function syncList(){
   const box = document.getElementById("tlist");
   box.textContent = "";
   document.getElementById("tcount").textContent =
-    trails.length + " lines · " + fmtDist(trails.reduce((s,t) => s+lenOf(t.p), 0));
+    (() => {
+      /* Remembered routes are listed with everything else, but they must not be
+         counted as trail mileage: the briefing already reports walked lines and
+         memories separately, and two different totals for the same word is how a
+         number stops meaning anything. */
+      const walked = trails.filter(t => !isMem(t)), mem = trails.length - walked.length;
+      return walked.length + " lines · " + fmtDist(walked.reduce((s,t) => s+lenOf(t.p), 0)) +
+             (mem ? " · " + mem + " remembered" : "");
+    })();
   for(const {t, L} of trails.map(t => ({t, L:lenOf(t.p)})).sort((a,b) => b.L-a.L)){
     const row = el("div", {class:"trow", "aria-selected":String(selT.has(t.id))});
     const nm = el("span", {class:"nm", title:"Double-tap to rename"},
@@ -2715,6 +2839,172 @@ async function doSave(){
     saving = false;
     if(dirty){ clearTimeout(saveT); saveT = setTimeout(doSave, 700); }
   }
+}
+
+/* ---------- remembered deer routes ----------
+   Where Steven has seen deer travel, drawn from memory, with NO date — because he
+   does not know it, and the app had no way to say so.
+
+   He could already draw a movement arrow: the `move` pin exists with a heading
+   dial. What he could not do was record it honestly. dropPin stamps today's date
+   on every pin and directional pins also get the current time of day, so a memory
+   from three seasons back filed as happening this afternoon — and the briefing
+   sorts sightings newest-first, which put those invented "today" entries ABOVE
+   every real dated observation. Worse than not recording them.
+
+   Why undated is still worth having: deer movement is spatially persistent. They
+   use terrain, and the ground does not move between seasons. A date tells you
+   about conditions; a location tells you about geography, and for the geography
+   question the date is nearly irrelevant.
+
+   The honest limit, which the inspector states out loud: recollection is sampled
+   where he was standing. The routes cluster near his stands because that is where
+   his eyes were, not because deer move more there. Blank map is not empty woods. */
+
+const MEM_WHAT   = ["don't recall", "doe(s)", "buck", "buck with does", "group"];
+const MEM_SEASON = ["don't recall", "early season", "rut", "late season"];
+/* "How often" does more work than anything else here. "Saw a deer cross here
+   once" and "they cross here every year" are wildly different claims, and a
+   crossing watched across five seasons has survived weather, pressure and
+   whatever the acorns did — stronger evidence than any single dated sighting.
+   It is also what memory is actually good at. */
+const MEM_OFTEN  = ["once", "a few times", "regularly", "every year"];
+const oftenWeight = o => Math.max(1, MEM_OFTEN.indexOf(o) + 1);
+
+const isMem = t => t && t.kind === "deer";
+const memLines = () => trails.filter(isMem);
+
+/* ---------- hiding whole kinds of line ----------
+   Same bargain as the pin kinds in build 25: a viewing preference, stored per
+   device and never synced, because what you want on screen in the stand is not
+   what you want on the laptop. */
+let hiddenLines = new Set();
+try{
+  const raw = localStorage.getItem("hiddenLines");
+  if(raw) hiddenLines = new Set(JSON.parse(raw));
+}catch(_){}
+const lineShown = t => !hiddenLines.has(t.kind || "trail");
+function saveHiddenLines(){
+  try{ localStorage.setItem("hiddenLines", JSON.stringify([...hiddenLines])); }catch(_){}
+}
+function setLineKind(k, on){
+  on ? hiddenLines.delete(k) : hiddenLines.add(k);
+  /* Do not leave a hidden line selected; you would be editing something you
+     cannot see. */
+  for(const id of [...selT]){
+    const t = getT(id);
+    if(t && !lineShown(t)) selT.delete(id);
+  }
+  if(primary){
+    const t = getT(primary);
+    if(t && !lineShown(t)){ primary = null; anchors = []; }
+  }
+  saveHiddenLines(); renderLineKinds(); syncList(); renderInsp(); draw();
+}
+function renderLineKinds(){
+  const list = document.getElementById("linetypelist");
+  if(!list) return;
+  const counts = {};
+  for(const t of trails) counts[t.kind || "trail"] = (counts[t.kind || "trail"] || 0) + 1;
+  const kinds = Object.keys(KINDS).filter(k => counts[k]);
+  list.textContent = "";
+  if(!kinds.length){
+    list.append(el("div", {class:"hint"}, ["No lines yet."]));
+  }else{
+    for(const k of kinds){
+      const row = el("label", {class:"chk"});
+      const box = el("input", {type:"checkbox"});
+      box.checked = !hiddenLines.has(k);
+      box.addEventListener("change", () => setLineKind(k, box.checked));
+      row.append(box,
+        el("span", {class:"swatch", style:"background:" + (KINDS[k].col || "var(--blaze)")}),
+        document.createTextNode(KINDS[k].label + "  (" + counts[k] + ")"));
+      list.append(row);
+    }
+  }
+  const hid = kinds.filter(k => hiddenLines.has(k)).length;
+  const tag = document.getElementById("linetypecount");
+  if(tag) tag.textContent = hid ? "— " + hid + " hidden" : "";
+}
+
+/* ---------- chevrons ----------
+   Without these a remembered route reads as just another trail. It is sign, not
+   infrastructure, and it should not be mistaken for a path you can walk. */
+function drawChevrons(t, pts){
+  const both = !!t.both;
+  const step = 54;                       // screen px between marks
+  let carry = 26;
+  ctx.save();
+  ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for(let i = 0; i < pts.length - 1; i++){
+    const a = [sx(pts[i][0]), sy(pts[i][1])], b = [sx(pts[i+1][0]), sy(pts[i+1][1])];
+    const dx = b[0]-a[0], dy = b[1]-a[1], seg = Math.hypot(dx, dy);
+    if(seg < 1) continue;
+    const ux = dx/seg, uy = dy/seg;
+    for(let d = carry; d < seg; d += (both ? step/2 : step)){
+      const x = a[0] + ux*d, y = a[1] + uy*d;
+      /* Two-way routes alternate forward and back along the line rather than
+         stacking both arrows on the same point, which drew a smudge instead of
+         a direction. */
+      const sgns = both ? [(Math.round(d/(step/2)) % 2) ? -1 : 1] : [1];
+      for(const sgn of sgns){
+        const px = -uy*sgn, py = ux*sgn;      // perpendicular, for the barbs
+        const tipx = x + ux*5*sgn, tipy = y + uy*5*sgn;
+        const bax = x - ux*4*sgn, bay = y - uy*4*sgn;
+        for(const pass of [{c:"rgba(10,12,8,.75)", w:4.2}, {c:"#14170F", w:1.6}]){
+          ctx.strokeStyle = pass.c; ctx.lineWidth = pass.w;
+          ctx.beginPath();
+          ctx.moveTo(bax + px*4.2, bay + py*4.2);
+          ctx.lineTo(tipx, tipy);
+          ctx.lineTo(bax - px*4.2, bay - py*4.2);
+          ctx.stroke();
+        }
+      }
+    }
+    const pitch = both ? step/2 : step;
+    carry = pitch - ((seg - carry) % pitch);
+  }
+  ctx.restore();
+}
+
+/* ---------- the analysis ----------
+   Point-to-polyline in world units, converted to yards for display. */
+function distToLine(x, y, pts){
+  let best = Infinity;
+  for(let i = 0; i < pts.length - 1; i++){
+    const r = distSeg(x, y, pts[i], pts[i+1]);
+    if(r.d < best) best = r.d;
+  }
+  return best * MPP();                   // metres
+}
+const memLabel = t =>
+  (t.name || "unnamed") +
+  " (" + (t.what && t.what !== MEM_WHAT[0] ? t.what : "deer") +
+  ", " + (t.often || "once") +
+  (t.season && t.season !== MEM_SEASON[0] ? ", " + t.season : "") + ")";
+
+/* Which remembered routes run past a given pin, nearest first. */
+function memNear(p, withinM){
+  const out = [];
+  for(const t of memLines()){
+    if(t.p.length < 2) continue;
+    const d = distToLine(p.x, p.y, t.p);
+    if(d <= withinM) out.push({t, d});
+  }
+  return out.sort((a, b) => a.d - b.d);
+}
+/* Sum of how-often weights for routes passing close by. This is the funnel
+   signal: four routes you see used every year beat six you saw once. */
+function memWeight(p, withinM){
+  return memNear(p, withinM).reduce((s, o) => s + oftenWeight(o.t.often), 0);
+}
+/* Inside the rut window, doe routes are the ones that matter. Bucks follow does,
+   so doe travel is the infrastructure and bucks are the traffic on it. Most
+   people record buck sightings and ignore doe sightings, which is backwards for
+   planning the rut. */
+const isDoeRoute = t => t.what === "doe(s)" || t.what === "buck with does";
+function rutRelevant(t){
+  return isDoeRoute(t) && (t.season === "rut" || !t.season || t.season === MEM_SEASON[0]);
 }
 
 /* ---------- where the inspector lives ----------
@@ -3313,6 +3603,13 @@ window.addEventListener("orientationchange", () => setTimeout(() => { placeInspe
   syncNow(false);
   placeInspector();
   renderPinKinds();
+  renderLineKinds();
+  document.getElementById("lt-all").onclick  = () => {
+    hiddenLines.clear(); saveHiddenLines(); renderLineKinds(); syncList(); draw(); };
+  document.getElementById("lt-none").onclick = () => {
+    for(const k in KINDS) hiddenLines.add(k);
+    selT.clear(); primary = null; anchors = [];
+    saveHiddenLines(); renderLineKinds(); syncList(); renderInsp(); draw(); };
   document.getElementById("pt-all").onclick  = () => { hiddenPins.clear(); saveHidden(); renderPinKinds(); draw(); };
   document.getElementById("pt-none").onclick = () => {
     for(const k in PINS) hiddenPins.add(k);
